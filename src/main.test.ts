@@ -16,6 +16,7 @@ const formatChallengeMetricsReportMock = vi.fn();
 const evaluateChallengeRetryEligibilityMock = vi.fn();
 const recordChallengeAttemptOutcomeMock = vi.fn();
 const updateLabelsMock = vi.fn();
+const createIssueMock = vi.fn();
 
 const DEFAULT_RUN_RESULT = {
   mergedPullRequest: false,
@@ -94,6 +95,7 @@ vi.mock("./issues/taskIssueManager.js", () => ({
     closeIssue = closeIssueMock;
     replenishSelfImprovementIssues = replenishSelfImprovementIssuesMock;
     updateLabels = updateLabelsMock;
+    createIssue = createIssueMock;
   },
 }));
 
@@ -152,6 +154,12 @@ describe("main", () => {
     recordChallengeAttemptOutcomeMock.mockResolvedValue({ failuresByChallenge: {} });
     updateLabelsMock.mockReset();
     updateLabelsMock.mockResolvedValue({ ok: true, message: "labels updated" });
+    createIssueMock.mockReset();
+    createIssueMock.mockResolvedValue({
+      ok: true,
+      message: "Created issue #100.",
+      issue: { number: 100, title: "Generated", description: "body", state: "open", labels: [] },
+    });
     process.argv = ["node", "src/main.ts"];
     vi.spyOn(console, "log").mockImplementation(() => {});
     vi.spyOn(console, "error").mockImplementation(() => {});
@@ -473,7 +481,7 @@ describe("main", () => {
       success: true,
     });
     expect(updateLabelsMock).toHaveBeenCalledWith(88, {
-      remove: ["challenge:failed", "challenge:ready-to-retry", "challenge:blocked"],
+      remove: ["challenge:failed", "challenge:ready-to-retry", "challenge:blocked", "learning-generated"],
     });
     expect(formatChallengeMetricsReportMock).toHaveBeenCalled();
   });
@@ -492,11 +500,21 @@ describe("main", () => {
     expect(recordChallengeAttemptMetricsMock).toHaveBeenCalledWith("/tmp/evolvo", {
       challengeIssueNumber: 89,
       success: false,
-      failureCategory: "execution_error",
+      failureCategory: "execution_failure",
     });
     expect(updateLabelsMock).toHaveBeenCalledWith(89, {
       add: ["challenge:failed"],
       remove: ["challenge:ready-to-retry", "challenge:blocked"],
+    });
+    expect(createIssueMock).toHaveBeenCalled();
+    expect(createIssueMock).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.stringContaining("Relates-to-Challenge: #89"),
+    );
+    expect(addProgressCommentMock).toHaveBeenCalledWith(89, expect.stringContaining("## Challenge Failure Learning"));
+    expect(addProgressCommentMock).toHaveBeenCalledWith(89, expect.stringContaining("Failure classification: `execution_failure`"));
+    expect(updateLabelsMock).toHaveBeenCalledWith(89, {
+      add: ["learning-generated"],
     });
   });
 
