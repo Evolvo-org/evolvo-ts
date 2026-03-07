@@ -9,6 +9,12 @@ jobs:
   build-and-test:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    env:
+      CONTEXT7_API_KEY: ci-context7
+      OPENAI_API_KEY: ci-openai
+      GITHUB_TOKEN: ci-github-token
+      GITHUB_OWNER: ci-owner
+      GITHUB_REPO: ci-repo
 
     steps:
       - name: Checkout
