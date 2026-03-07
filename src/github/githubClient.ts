@@ -49,6 +49,7 @@ function readNonNegativeInteger(value: number | undefined, fallback: number, nam
 }
 
 export class GitHubClient {
+  private readonly apiBaseUrl: string;
   private readonly baseIssueUrl: string;
   private readonly token: string;
   private readonly requestTimeoutMs: number;
@@ -56,8 +57,8 @@ export class GitHubClient {
   private readonly retryBaseDelayMs: number;
 
   public constructor(config: GitHubConfig) {
-    const apiBase = config.apiBaseUrl.replace(/\/+$/, "");
-    this.baseIssueUrl = `${apiBase}/repos/${encodeURIComponent(config.owner)}/${encodeURIComponent(config.repo)}/issues`;
+    this.apiBaseUrl = config.apiBaseUrl.replace(/\/+$/, "");
+    this.baseIssueUrl = `${this.apiBaseUrl}/repos/${encodeURIComponent(config.owner)}/${encodeURIComponent(config.repo)}/issues`;
     this.token = config.token;
     this.requestTimeoutMs = readPositiveInteger(
       config.requestTimeoutMs,
@@ -73,23 +74,38 @@ export class GitHubClient {
   }
 
   public async get<T>(path: string): Promise<T> {
-    return this.request<T>(path, { method: "GET" });
+    return this.request<T>(`${this.baseIssueUrl}${path}`, { method: "GET" });
   }
 
   public async post<T>(path: string, body?: unknown): Promise<T> {
-    return this.request<T>(path, { method: "POST", body });
+    return this.request<T>(`${this.baseIssueUrl}${path}`, { method: "POST", body });
   }
 
   public async patch<T>(path: string, body?: unknown): Promise<T> {
-    return this.request<T>(path, { method: "PATCH", body });
+    return this.request<T>(`${this.baseIssueUrl}${path}`, { method: "PATCH", body });
   }
 
   public async delete(path: string): Promise<void> {
-    await this.request<null>(path, { method: "DELETE" });
+    await this.request<null>(`${this.baseIssueUrl}${path}`, { method: "DELETE" });
   }
 
-  private async request<T>(path: string, options: RequestOptions): Promise<T> {
-    const url = `${this.baseIssueUrl}${path}`;
+  public async getApi<T>(path: string): Promise<T> {
+    return this.request<T>(`${this.apiBaseUrl}${path}`, { method: "GET" });
+  }
+
+  public async postApi<T>(path: string, body?: unknown): Promise<T> {
+    return this.request<T>(`${this.apiBaseUrl}${path}`, { method: "POST", body });
+  }
+
+  public async patchApi<T>(path: string, body?: unknown): Promise<T> {
+    return this.request<T>(`${this.apiBaseUrl}${path}`, { method: "PATCH", body });
+  }
+
+  public async deleteApi(path: string): Promise<void> {
+    await this.request<null>(`${this.apiBaseUrl}${path}`, { method: "DELETE" });
+  }
+
+  private async request<T>(url: string, options: RequestOptions): Promise<T> {
     const totalAttempts = this.maxRetries + 1;
 
     for (let attempt = 1; attempt <= totalAttempts; attempt += 1) {

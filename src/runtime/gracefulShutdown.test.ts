@@ -8,6 +8,7 @@ import {
   getGracefulShutdownRequestPath,
   readDiscordControlCursor,
   readGracefulShutdownRequest,
+  recordDiscordControlCommandReceipt,
   recordGracefulShutdownRequest,
   writeDiscordControlCursor,
 } from "./gracefulShutdown.js";
@@ -88,5 +89,25 @@ describe("gracefulShutdown", () => {
       "utf8",
     );
     await expect(readGracefulShutdownRequest(workDir)).resolves.toBeNull();
+  });
+
+  it("records Discord control receipts once per message id", async () => {
+    const workDir = await createTempWorkDir();
+    tempDirs.push(workDir);
+
+    await expect(
+      recordDiscordControlCommandReceipt(workDir, {
+        command: "start-project",
+        messageId: "9100",
+        recordedAt: "2026-03-07T14:00:00.000Z",
+      }),
+    ).resolves.toBe(true);
+    await expect(
+      recordDiscordControlCommandReceipt(workDir, {
+        command: "start-project",
+        messageId: "9100",
+        recordedAt: "2026-03-07T14:05:00.000Z",
+      }),
+    ).resolves.toBe(false);
   });
 });

@@ -4,6 +4,7 @@ import type { CodingAgentRunResult } from "./agents/runCodingAgent.js";
 import { runCodingAgent } from "./agents/runCodingAgent.js";
 import { runPlannerAgent } from "./agents/plannerAgent.js";
 import { WORK_DIR } from "./constants/workDir.js";
+import { GitHubAdminClient } from "./github/githubAdminClient.js";
 import { GitHubClient } from "./github/githubClient.js";
 import { getGitHubConfig } from "./github/githubConfig.js";
 import {
@@ -39,6 +40,7 @@ import {
   pollDiscordGracefulShutdownCommand,
   requestCycleLimitDecisionFromOperator,
   runDiscordOperatorControlStartupCheck,
+  type DiscordControlHandlers,
   startDiscordGracefulShutdownListener,
 } from "./runtime/operatorControl.js";
 import {
@@ -57,6 +59,13 @@ import {
 import { runIssueCommand } from "./issues/runIssueCommand.js";
 import { hasIssueLabel, isChallengeIssue } from "./issues/challengeIssue.js";
 import { TaskIssueManager, type IssueSummary } from "./issues/taskIssueManager.js";
+import {
+  buildProjectProvisioningCompletionSummary,
+  buildProjectProvisioningOutcomeComment,
+  createProjectProvisioningRequestIssue,
+  executeProjectProvisioningIssue,
+  isProjectProvisioningRequestIssue,
+} from "./projects/projectProvisioning.js";
 
 const MAX_ISSUE_CYCLES = 5;
 const MIN_REPLENISH_ISSUES = 3;
@@ -162,8 +171,12 @@ function buildGracefulShutdownLogMessage(
   return `Graceful shutdown requested via Discord ${request.command}. ${reason}`;
 }
 
-async function stopIfGracefulShutdownRequested(workDir: string, reason: string): Promise<boolean> {
-  await pollDiscordGracefulShutdownCommand(workDir);
+async function stopIfGracefulShutdownRequested(
+  workDir: string,
+  reason: string,
+  discordHandlers: DiscordControlHandlers,
+): Promise<boolean> {
+  await pollDiscordGracefulShutdownCommand(workDir, discordHandlers);
   const request = await consumeGracefulShutdownRequest(workDir);
   if (request === null) {
     return false;
@@ -181,23 +194,38 @@ export async function main(): Promise<void> {
   }
 
   const { GITHUB_OWNER, GITHUB_REPO } = await import("./environment.js");
-  const issueManager = new TaskIssueManager(new GitHubClient(getGitHubConfig()));
+  const githubConfig = getGitHubConfig();
+  const githubClient = new GitHubClient(githubConfig);
+  const issueManager = new TaskIssueManager(githubClient);
+  const adminClient = new GitHubAdminClient(githubClient, githubConfig);
   const repositoryName = `${GITHUB_OWNER}/${GITHUB_REPO}`;
+  const discordHandlers: DiscordControlHandlers = {
+    onStartProject: async (request) =>
+      createProjectProvisioningRequestIssue({
+        issueManager,
+        workDir: WORK_DIR,
+        trackerOwner: GITHUB_OWNER,
+        trackerRepo: GITHUB_REPO,
+        projectName: request.displayName,
+        requestedBy: request.requestedBy,
+        requestedAt: request.requestedAt,
+      }),
+  };
 
   console.log(`Hello from ${GITHUB_OWNER}/${GITHUB_REPO}!`);
   console.log(`Working directory: ${WORK_DIR}`);
   await signalRestartReadinessIfRequested(WORK_DIR);
   await runDiscordOperatorControlStartupCheck();
-  const gracefulShutdownListener = await startDiscordGracefulShutdownListener(WORK_DIR);
+  const gracefulShutdownListener = await startDiscordGracefulShutdownListener(WORK_DIR, discordHandlers);
 
   try {
-    if (await stopIfGracefulShutdownRequested(WORK_DIR, "Stopping before starting a new task.")) {
+    if (await stopIfGracefulShutdownRequested(WORK_DIR, "Stopping before starting a new task.", discordHandlers)) {
       return;
     }
 
     let cycleLimit = MAX_ISSUE_CYCLES;
     issueCycleLoop: for (let cycle = 1; ; cycle += 1) {
-      if (await stopIfGracefulShutdownRequested(WORK_DIR, "Stopping before starting a new task.")) {
+      if (await stopIfGracefulShutdownRequested(WORK_DIR, "Stopping before starting a new task.", discordHandlers)) {
         return;
       }
 
@@ -251,14 +279,20 @@ export async function main(): Promise<void> {
               });
             },
           });
-          if (await stopIfGracefulShutdownRequested(WORK_DIR, "Stopping before starting a new task.")) {
+          if (await stopIfGracefulShutdownRequested(WORK_DIR, "Stopping before starting a new task.", discordHandlers)) {
             return;
           }
 
           const selectedIssue = selectIssueForWork(retryEligibleIssues);
 
           if (!selectedIssue) {
-            if (await stopIfGracefulShutdownRequested(WORK_DIR, "Stopping before planner replenishment.")) {
+            if (
+              await stopIfGracefulShutdownRequested(
+                WORK_DIR,
+                "Stopping before planner replenishment.",
+                discordHandlers,
+              )
+            ) {
               return;
             }
 
@@ -283,7 +317,13 @@ export async function main(): Promise<void> {
             });
 
             if (createdIssues.length > 0) {
-              if (await stopIfGracefulShutdownRequested(WORK_DIR, "Stopping before starting a new task.")) {
+              if (
+                await stopIfGracefulShutdownRequested(
+                  WORK_DIR,
+                  "Stopping before starting a new task.",
+                  discordHandlers,
+                )
+              ) {
                 return;
               }
 
@@ -294,7 +334,7 @@ export async function main(): Promise<void> {
               continue issueCycleLoop;
             }
 
-            if (await stopIfGracefulShutdownRequested(WORK_DIR, "Stopping before starting a new task.")) {
+            if (await stopIfGracefulShutdownRequested(WORK_DIR, "Stopping before starting a new task.", discordHandlers)) {
               return;
             }
 
@@ -339,15 +379,89 @@ export async function main(): Promise<void> {
             });
           }
 
-          const prompt = buildPromptFromIssue(selectedIssue);
-          console.log(`Prompt: ${prompt}`);
+          const isProvisioningIssue = isProjectProvisioningRequestIssue(selectedIssue);
           await transitionIssueLifecycleState(issueManager, {
             issue: selectedIssue,
             nextState: "executing",
-            reason: "coding agent execution started",
+            reason: isProvisioningIssue
+              ? "project provisioning execution started"
+              : "coding agent execution started",
             cycle,
           });
 
+          if (isProvisioningIssue) {
+            const provisioningResult = await executeProjectProvisioningIssue({
+              issue: selectedIssue,
+              workDir: WORK_DIR,
+              trackerOwner: GITHUB_OWNER,
+              trackerRepo: GITHUB_REPO,
+              adminClient,
+            });
+            await addIssueLifecycleComment(
+              issueManager,
+              selectedIssue.number,
+              buildProjectProvisioningOutcomeComment(provisioningResult),
+            );
+
+            if (provisioningResult.ok) {
+              await transitionIssueLifecycleState(issueManager, {
+                issue: selectedIssue,
+                nextState: "accepted",
+                reason: "project provisioning request completed successfully",
+                cycle,
+              });
+              const completionResult = await issueManager.markCompleted(
+                selectedIssue.number,
+                buildProjectProvisioningCompletionSummary(provisioningResult),
+              );
+              if (!completionResult.ok) {
+                console.error(`Could not mark issue #${selectedIssue.number} as completed: ${completionResult.message}`);
+              }
+              const closeResult = await issueManager.closeIssue(selectedIssue.number);
+              if (!closeResult.ok) {
+                console.error(`Could not close issue #${selectedIssue.number}: ${closeResult.message}`);
+              } else {
+                await transitionIssueLifecycleState(issueManager, {
+                  issue: selectedIssue,
+                  nextState: "completed",
+                  reason: "project provisioning request completed and issue was closed",
+                  cycle,
+                });
+              }
+            } else {
+              await transitionIssueLifecycleState(issueManager, {
+                issue: selectedIssue,
+                nextState: "failed",
+                reason: `project provisioning failed at ${provisioningResult.failureStep ?? "unknown"} step`,
+                cycle,
+              });
+              const resetLabels = await issueManager.updateLabels(selectedIssue.number, {
+                remove: ["in progress"],
+              });
+              if (!resetLabels.ok) {
+                console.error(`Could not clear in-progress label for issue #${selectedIssue.number}: ${resetLabels.message}`);
+              }
+              const closeResult = await issueManager.closeIssue(selectedIssue.number);
+              if (!closeResult.ok) {
+                console.error(`Could not close failed provisioning issue #${selectedIssue.number}: ${closeResult.message}`);
+              }
+            }
+
+            if (
+              await stopIfGracefulShutdownRequested(
+                WORK_DIR,
+                "Current task completed. Stopping before starting another issue.",
+                discordHandlers,
+              )
+            ) {
+              return;
+            }
+
+            break;
+          }
+
+          const prompt = buildPromptFromIssue(selectedIssue);
+          console.log(`Prompt: ${prompt}`);
           let runError: unknown = null;
           const runResult = await runCodingAgent(prompt).catch((error) => {
             runError = error;
@@ -472,6 +586,7 @@ export async function main(): Promise<void> {
             await stopIfGracefulShutdownRequested(
               WORK_DIR,
               "Current task completed. Stopping before starting another issue.",
+              discordHandlers,
             )
           ) {
             return;
