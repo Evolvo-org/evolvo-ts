@@ -1,3 +1,10 @@
+import {
+  recordGracefulShutdownRequest,
+  readDiscordControlCursor,
+  type GracefulShutdownRequest,
+  writeDiscordControlCursor,
+} from "./gracefulShutdown.js";
+
 type DiscordControlConfig = {
   botToken: string;
   guildId: string;
@@ -25,7 +32,9 @@ type DiscordOperatorStep =
   | "send-boot-message"
   | "send-prompt"
   | "wait-for-reply"
-  | "send-issue-start";
+  | "send-issue-start"
+  | "read-quit-commands"
+  | "send-quit-ack";
 
 type DiscordIssueStartNotification = {
   issueNumber: number;
@@ -82,14 +91,18 @@ export function getDiscordControlConfigFromEnv(
 
 function parseOperatorDecision(content: string): "continue" | "quit" | null {
   const normalized = content.trim().toLowerCase();
-  if (normalized === "continue") {
+  if (normalized === "continue" || normalized === "/continue") {
     return "continue";
   }
-  if (normalized === "quit") {
+  if (normalized === "quit" || normalized === "/quit") {
     return "quit";
   }
 
   return null;
+}
+
+function isGracefulShutdownCommand(content: string): boolean {
+  return content.trim().toLowerCase() === "/quit";
 }
 
 function buildAuthHeaders(config: DiscordControlConfig): Record<string, string> {
@@ -125,7 +138,7 @@ async function sendCycleLimitPrompt(
 ): Promise<{ id: string }> {
   const content = [
     `<@${config.operatorUserId}> Evolvo has reached its cycle limit (${currentLimit}).`,
-    `Reply in this channel with \`continue\` to add ${config.cycleExtension} more cycles, or \`quit\` to stop.`,
+    `Reply in this channel with \`continue\` to add ${config.cycleExtension} more cycles, or \`quit\` / \`/quit\` to stop.`,
   ].join("\n");
 
   return fetchDiscordJson<{ id: string }>(config, `/channels/${config.controlChannelId}/messages`, {
@@ -138,7 +151,7 @@ async function sendStartupBootMessage(config: DiscordControlConfig): Promise<voi
   const startedAt = new Date().toISOString();
   const content = [
     "🤖 Evolvo runtime booted.",
-    "Operator control is online for cycle-limit decisions.",
+    "Operator control is online for cycle-limit decisions and graceful shutdown.",
     `Started at: ${startedAt}`,
   ].join("\n");
 
@@ -189,6 +202,18 @@ async function sendIssueStartNotification(
         },
       ],
     }),
+  });
+}
+
+async function sendGracefulShutdownAcknowledgement(config: DiscordControlConfig): Promise<void> {
+  const content = [
+    `<@${config.operatorUserId}> Graceful shutdown requested.`,
+    "Evolvo will finish the current task and then stop before starting another issue.",
+  ].join("\n");
+
+  await fetchDiscordJson<{ id: string }>(config, `/channels/${config.controlChannelId}/messages`, {
+    method: "POST",
+    body: JSON.stringify({ content }),
   });
 }
 
@@ -249,6 +274,45 @@ async function verifyControlChannel(config: DiscordControlConfig): Promise<void>
   }
 }
 
+async function fetchControlChannelMessages(
+  config: DiscordControlConfig,
+  options: {
+    afterId?: string | null;
+    limit?: number;
+  } = {},
+): Promise<Array<{
+  id: string;
+  content: string;
+  author?: { id?: string };
+}>> {
+  const query = new URLSearchParams();
+  query.set("limit", String(options.limit ?? 50));
+  if (options.afterId && options.afterId.trim().length > 0) {
+    query.set("after", options.afterId);
+  }
+
+  return fetchDiscordJson<Array<{
+    id: string;
+    content: string;
+    author?: { id?: string };
+  }>>(config, `/channels/${config.controlChannelId}/messages?${query.toString()}`);
+}
+
+async function initializeDiscordControlCursor(
+  config: DiscordControlConfig,
+  workDir: string,
+): Promise<string | null> {
+  const existingCursor = await readDiscordControlCursor(workDir);
+  if (existingCursor !== null) {
+    return existingCursor;
+  }
+
+  const messages = await fetchControlChannelMessages(config, { limit: 1 });
+  const lastSeenMessageId = messages[0]?.id ?? null;
+  await writeDiscordControlCursor(workDir, lastSeenMessageId);
+  return lastSeenMessageId;
+}
+
 function buildStepFailureMessage(step: DiscordOperatorStep, error: unknown): string {
   const message = error instanceof Error ? error.message : "unknown error";
   return `[${step}] ${message}`;
@@ -301,6 +365,110 @@ export async function runDiscordOperatorControlStartupCheck(): Promise<void> {
   }
 
   console.log("Discord operator control startup boot message posted.");
+}
+
+export async function pollDiscordGracefulShutdownCommand(
+  workDir: string,
+): Promise<GracefulShutdownRequest | null> {
+  const config = getDiscordControlConfigFromEnv();
+  if (!config) {
+    return null;
+  }
+
+  try {
+    const afterId = await initializeDiscordControlCursor(config, workDir);
+    const messages = await fetchControlChannelMessages(config, { afterId, limit: 50 });
+    if (messages.length === 0) {
+      return null;
+    }
+
+    await writeDiscordControlCursor(workDir, getHighestSnowflakeId(messages.map((message) => message.id)));
+
+    const quitMessage = messages.find((message) =>
+      message.author?.id === config.operatorUserId && isGracefulShutdownCommand(message.content)
+    );
+    if (!quitMessage) {
+      return null;
+    }
+
+    const recordedRequest = await recordGracefulShutdownRequest(workDir, {
+      messageId: quitMessage.id,
+    });
+    if (!recordedRequest.created) {
+      return recordedRequest.request;
+    }
+
+    try {
+      await sendGracefulShutdownAcknowledgement(config);
+    } catch (error) {
+      const message = buildStepFailureMessage("send-quit-ack", error);
+      console.error(`Discord graceful shutdown acknowledgement failed: ${message}`);
+      logDiscordMissingAccessHint(message);
+    }
+
+    return recordedRequest.request;
+  } catch (error) {
+    const message = buildStepFailureMessage("read-quit-commands", error);
+    console.error(`Discord graceful shutdown polling failed: ${message}`);
+    logDiscordMissingAccessHint(message);
+    return null;
+  }
+}
+
+export type DiscordGracefulShutdownListener = {
+  stop: () => Promise<void>;
+};
+
+export async function startDiscordGracefulShutdownListener(
+  workDir: string,
+): Promise<DiscordGracefulShutdownListener | null> {
+  const config = getDiscordControlConfigFromEnv();
+  if (!config) {
+    return null;
+  }
+
+  try {
+    await initializeDiscordControlCursor(config, workDir);
+  } catch (error) {
+    const message = buildStepFailureMessage("read-quit-commands", error);
+    console.error(`Discord graceful shutdown listener bootstrap failed: ${message}`);
+    logDiscordMissingAccessHint(message);
+  }
+
+  let stopped = false;
+  let pendingPoll: Promise<void> | null = null;
+  let timer: NodeJS.Timeout | null = null;
+
+  const scheduleNextPoll = (): void => {
+    if (stopped) {
+      return;
+    }
+
+    timer = setTimeout(() => {
+      pendingPoll = pollDiscordGracefulShutdownCommand(workDir)
+        .catch(() => undefined)
+        .then(() => undefined)
+        .finally(() => {
+          pendingPoll = null;
+          scheduleNextPoll();
+        });
+    }, config.pollIntervalMs);
+    timer.unref?.();
+  };
+
+  scheduleNextPoll();
+
+  return {
+    stop: async () => {
+      stopped = true;
+      if (timer !== null) {
+        clearTimeout(timer);
+      }
+      if (pendingPoll !== null) {
+        await pendingPoll;
+      }
+    },
+  };
 }
 
 export async function notifyIssueStartedInDiscord(

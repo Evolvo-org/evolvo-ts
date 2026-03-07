@@ -26,6 +26,10 @@ const writeRuntimeReadinessSignalMock = vi.fn();
 const requestCycleLimitDecisionFromOperatorMock = vi.fn();
 const runDiscordOperatorControlStartupCheckMock = vi.fn();
 const notifyIssueStartedInDiscordMock = vi.fn();
+const pollDiscordGracefulShutdownCommandMock = vi.fn();
+const startDiscordGracefulShutdownListenerMock = vi.fn();
+const stopDiscordGracefulShutdownListenerMock = vi.fn();
+const consumeGracefulShutdownRequestMock = vi.fn();
 const tryResolveRepositoryDefaultBranchMock = vi.fn();
 
 const DEFAULT_RUN_RESULT = {
@@ -103,10 +107,16 @@ vi.mock("./runtime/runtimeReadiness.js", () => ({
   writeRuntimeReadinessSignal: writeRuntimeReadinessSignalMock,
 }));
 
+vi.mock("./runtime/gracefulShutdown.js", () => ({
+  consumeGracefulShutdownRequest: consumeGracefulShutdownRequestMock,
+}));
+
 vi.mock("./runtime/operatorControl.js", () => ({
   notifyIssueStartedInDiscord: notifyIssueStartedInDiscordMock,
+  pollDiscordGracefulShutdownCommand: pollDiscordGracefulShutdownCommandMock,
   requestCycleLimitDecisionFromOperator: requestCycleLimitDecisionFromOperatorMock,
   runDiscordOperatorControlStartupCheck: runDiscordOperatorControlStartupCheckMock,
+  startDiscordGracefulShutdownListener: startDiscordGracefulShutdownListenerMock,
 }));
 
 vi.mock("./issues/runIssueCommand.js", () => ({
@@ -261,12 +271,22 @@ describe("main", () => {
     buildLifecycleStateCommentMock.mockReturnValue("## Canonical Lifecycle State");
     writeRuntimeReadinessSignalMock.mockReset();
     writeRuntimeReadinessSignalMock.mockResolvedValue("/tmp/evolvo/.evolvo/runtime-readiness.json");
+    consumeGracefulShutdownRequestMock.mockReset();
+    consumeGracefulShutdownRequestMock.mockResolvedValue(null);
+    pollDiscordGracefulShutdownCommandMock.mockReset();
+    pollDiscordGracefulShutdownCommandMock.mockResolvedValue(null);
     requestCycleLimitDecisionFromOperatorMock.mockReset();
     requestCycleLimitDecisionFromOperatorMock.mockResolvedValue(null);
     runDiscordOperatorControlStartupCheckMock.mockReset();
     runDiscordOperatorControlStartupCheckMock.mockResolvedValue(undefined);
     notifyIssueStartedInDiscordMock.mockReset();
     notifyIssueStartedInDiscordMock.mockResolvedValue(undefined);
+    stopDiscordGracefulShutdownListenerMock.mockReset();
+    stopDiscordGracefulShutdownListenerMock.mockResolvedValue(undefined);
+    startDiscordGracefulShutdownListenerMock.mockReset();
+    startDiscordGracefulShutdownListenerMock.mockResolvedValue({
+      stop: stopDiscordGracefulShutdownListenerMock,
+    });
     process.argv = ["node", "test-runner.ts"];
     vi.spyOn(console, "log").mockImplementation(() => {});
     vi.spyOn(console, "error").mockImplementation(() => {});
@@ -311,6 +331,8 @@ describe("main", () => {
     await main();
 
     expect(runDiscordOperatorControlStartupCheckMock).toHaveBeenCalledTimes(1);
+    expect(startDiscordGracefulShutdownListenerMock).toHaveBeenCalledWith("/tmp/evolvo");
+    expect(stopDiscordGracefulShutdownListenerMock).toHaveBeenCalledTimes(1);
   });
 
   it("selects an open issue and uses it as the prompt", async () => {
@@ -1173,6 +1195,57 @@ describe("main", () => {
     expect(requestCycleLimitDecisionFromOperatorMock).toHaveBeenCalledWith(5);
     expect(console.error).toHaveBeenCalledWith("Operator decision via Discord: quit.");
     expect(console.error).toHaveBeenCalledWith("Reached the maximum number of issue cycles (5).");
+  });
+
+  it("stops before starting a new task when a graceful shutdown request is already pending", async () => {
+    consumeGracefulShutdownRequestMock.mockResolvedValueOnce({
+      version: 1,
+      source: "discord",
+      command: "/quit",
+      messageId: "9001",
+      requestedAt: "2026-03-07T12:00:00.000Z",
+    });
+    const { main } = await import("./main.js");
+
+    await main();
+
+    expect(listOpenIssuesMock).not.toHaveBeenCalled();
+    expect(runCodingAgentMock).not.toHaveBeenCalled();
+    expect(console.log).toHaveBeenCalledWith(
+      "Graceful shutdown requested via Discord /quit. Stopping before starting a new task.",
+    );
+  });
+
+  it("finishes the current task and stops before selecting another issue after /quit is requested", async () => {
+    listOpenIssuesMock
+      .mockResolvedValueOnce([
+        { number: 301, title: "Current task", description: "finish this", state: "open", labels: [] },
+      ])
+      .mockResolvedValueOnce([
+        { number: 302, title: "Next task", description: "should not start", state: "open", labels: [] },
+      ]);
+    consumeGracefulShutdownRequestMock
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce({
+        version: 1,
+        source: "discord",
+        command: "/quit",
+        messageId: "9002",
+        requestedAt: "2026-03-07T12:05:00.000Z",
+      });
+    const { main } = await import("./main.js");
+
+    await main();
+
+    expect(runCodingAgentMock).toHaveBeenCalledTimes(1);
+    expect(runCodingAgentMock).toHaveBeenCalledWith("Issue #301: Current task\n\nfinish this");
+    expect(markInProgressMock).toHaveBeenCalledWith(301);
+    expect(markInProgressMock).not.toHaveBeenCalledWith(302);
+    expect(console.log).toHaveBeenCalledWith(
+      "Graceful shutdown requested via Discord /quit. Current task completed. Stopping before starting another issue.",
+    );
   });
 
   it("adds a lifecycle issue comment when agent execution fails", async () => {
