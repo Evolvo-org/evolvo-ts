@@ -21,6 +21,12 @@ import {
   recordChallengeAttemptOutcome,
   type ChallengeRetryDecision,
 } from "./challenges/retryGate.js";
+import {
+  buildChallengeFailureLearningComment,
+  CHALLENGE_LEARNING_GENERATED_LABEL,
+  classifyChallengeFailure,
+  createCorrectiveIssuesForChallengeFailure,
+} from "./challenges/challengeFailureLearning.js";
 import type { CodingAgentRunResult, CommandExecutionSummary } from "./agents/runCodingAgent.js";
 
 export const DEFAULT_PROMPT = "No open issues available. Create an issue first.";
@@ -64,29 +70,6 @@ function isChallengeIssue(issue: IssueSummary): boolean {
   return hasLabel(issue, "challenge");
 }
 
-function classifyChallengeFailure(
-  runError: unknown,
-  runResult: CodingAgentRunResult | null,
-): string {
-  if (runError) {
-    return "execution_error";
-  }
-
-  if (!runResult) {
-    return "unknown";
-  }
-
-  if (runResult.summary.failedValidationCommands.length > 0) {
-    return "validation_failure";
-  }
-
-  if (runResult.summary.reviewOutcome === "amended") {
-    return "review_rejection";
-  }
-
-  return "unknown";
-}
-
 async function updateChallengeMetrics(
   issueManager: TaskIssueManager,
   issue: IssueSummary,
@@ -114,7 +97,12 @@ async function updateChallengeMetrics(
     const failureAttempts = retryState.failuresByChallenge[String(issue.number)]?.attempts ?? 0;
     const labelUpdate = success
       ? await issueManager.updateLabels(issue.number, {
-          remove: [CHALLENGE_FAILED_LABEL, CHALLENGE_READY_TO_RETRY_LABEL, CHALLENGE_BLOCKED_LABEL],
+          remove: [
+            CHALLENGE_FAILED_LABEL,
+            CHALLENGE_READY_TO_RETRY_LABEL,
+            CHALLENGE_BLOCKED_LABEL,
+            CHALLENGE_LEARNING_GENERATED_LABEL,
+          ],
         })
       : await issueManager.updateLabels(issue.number, {
           add: failureAttempts >= CHALLENGE_MAX_ATTEMPTS
@@ -126,6 +114,32 @@ async function updateChallengeMetrics(
         });
     if (!labelUpdate.ok) {
       console.error(`Could not update challenge retry labels for issue #${issue.number}: ${labelUpdate.message}`);
+    }
+
+    if (!success && failureCategory) {
+      const correctiveIssues = await createCorrectiveIssuesForChallengeFailure(
+        issueManager,
+        issue.number,
+        failureCategory,
+      );
+      const learningComment = buildChallengeFailureLearningComment({
+        challengeIssueNumber: issue.number,
+        category: failureCategory,
+        correctiveIssues,
+      });
+      const commentResult = await issueManager.addProgressComment(issue.number, learningComment);
+      if (!commentResult.ok) {
+        console.error(`Could not add challenge learning comment for issue #${issue.number}: ${commentResult.message}`);
+      }
+
+      if (correctiveIssues.length > 0) {
+        const learningLabelUpdate = await issueManager.updateLabels(issue.number, {
+          add: [CHALLENGE_LEARNING_GENERATED_LABEL],
+        });
+        if (!learningLabelUpdate.ok) {
+          console.error(`Could not set learning label for issue #${issue.number}: ${learningLabelUpdate.message}`);
+        }
+      }
     }
 
     console.log(formatChallengeMetricsReport(metrics));
