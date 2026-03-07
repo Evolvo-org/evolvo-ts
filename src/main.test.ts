@@ -912,6 +912,35 @@ describe("main", () => {
     );
   });
 
+  it("resets transient retry attempts between cycles after recovery", async () => {
+    process.argv = ["node", "test-runner.ts"];
+    listOpenIssuesMock
+      .mockRejectedValueOnce(new GitHubApiError("GitHub API request failed (503): Service Unavailable", 503, null))
+      .mockResolvedValueOnce([
+        { number: 71, title: "Cycle one recovery", description: "recover in cycle 1", state: "open", labels: [] },
+      ])
+      .mockRejectedValueOnce(new GitHubApiError("GitHub API request failed (503): Service Unavailable", 503, null))
+      .mockResolvedValueOnce([
+        { number: 72, title: "Cycle two recovery", description: "recover in cycle 2", state: "open", labels: [] },
+      ])
+      .mockResolvedValueOnce([]);
+    const { main } = await import("./main.js");
+
+    await main();
+
+    expect(runCodingAgentMock).toHaveBeenNthCalledWith(1, "Issue #71: Cycle one recovery\n\nrecover in cycle 1");
+    expect(runCodingAgentMock).toHaveBeenNthCalledWith(2, "Issue #72: Cycle two recovery\n\nrecover in cycle 2");
+    expect(console.error).toHaveBeenCalledWith(
+      expect.stringContaining("Transient GitHub issue sync failure on cycle 1 (attempt 1/2). Retrying in 50ms."),
+    );
+    expect(console.error).toHaveBeenCalledWith(
+      expect.stringContaining("Transient GitHub issue sync failure on cycle 2 (attempt 1/2). Retrying in 50ms."),
+    );
+    expect(console.error).not.toHaveBeenCalledWith(
+      expect.stringContaining("Transient GitHub issue sync failure on cycle 2 (attempt 2/2)."),
+    );
+  });
+
   it("retries transient GitHub bootstrap failures in the run loop and recovers", async () => {
     process.argv = ["node", "test-runner.ts"];
     listOpenIssuesMock
