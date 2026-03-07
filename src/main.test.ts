@@ -26,6 +26,7 @@ const writeRuntimeReadinessSignalMock = vi.fn();
 const requestCycleLimitDecisionFromOperatorMock = vi.fn();
 const runDiscordOperatorControlStartupCheckMock = vi.fn();
 const notifyIssueStartedInDiscordMock = vi.fn();
+const tryResolveRepositoryDefaultBranchMock = vi.fn();
 
 const DEFAULT_RUN_RESULT = {
   mergedPullRequest: false,
@@ -62,6 +63,18 @@ vi.mock("./agents/plannerAgent.js", () => ({
 
 vi.mock("./runtime/selfRestart.js", () => ({
   runPostMergeSelfRestart: runPostMergeSelfRestartMock,
+}));
+
+vi.mock("./runtime/defaultBranch.js", () => ({
+  buildMergedPullRequestReason: (defaultBranch: string | null | undefined) =>
+    defaultBranch && defaultBranch.trim().length > 0
+      ? `pull request merged into ${defaultBranch.trim()}`
+      : "pull request merged into repository default branch",
+  describeRepositoryDefaultBranch: (defaultBranch: string | null | undefined) =>
+    defaultBranch && defaultBranch.trim().length > 0
+      ? `\`${defaultBranch.trim()}\``
+      : "the repository default branch",
+  tryResolveRepositoryDefaultBranch: tryResolveRepositoryDefaultBranchMock,
 }));
 
 vi.mock("./challenges/challengeMetrics.js", () => ({
@@ -164,6 +177,8 @@ describe("main", () => {
     });
     runPostMergeSelfRestartMock.mockReset();
     runPostMergeSelfRestartMock.mockResolvedValue(undefined);
+    tryResolveRepositoryDefaultBranchMock.mockReset();
+    tryResolveRepositoryDefaultBranchMock.mockResolvedValue("main");
     runIssueCommandMock.mockReset();
     runIssueCommandMock.mockResolvedValue(false);
     getGitHubConfigMock.mockReset();
@@ -517,6 +532,7 @@ describe("main", () => {
     listOpenIssuesMock.mockResolvedValueOnce([
       { number: 11, title: "Restart flow", description: "Restart", state: "open", labels: [] },
     ]);
+    tryResolveRepositoryDefaultBranchMock.mockResolvedValueOnce("release");
     runCodingAgentMock.mockResolvedValueOnce({
       ...DEFAULT_RUN_RESULT,
       mergedPullRequest: true,
@@ -526,7 +542,14 @@ describe("main", () => {
 
     await main();
 
-    expect(addProgressCommentMock).toHaveBeenCalledWith(11, expect.stringContaining("## Merge Outcome"));
+    expect(addProgressCommentMock).toHaveBeenCalledWith(11, expect.stringContaining("merged into `release`"));
+    expect(transitionCanonicalLifecycleStateMock).toHaveBeenCalledWith(
+      "/tmp/evolvo",
+      expect.objectContaining({
+        nextState: "merged",
+        reason: "pull request merged into release",
+      }),
+    );
     expect(runPostMergeSelfRestartMock).toHaveBeenCalledWith("/tmp/evolvo");
   });
 

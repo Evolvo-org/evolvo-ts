@@ -14,6 +14,7 @@ const persistChallengeAttemptArtifactMock = vi.fn();
 const transitionCanonicalLifecycleStateMock = vi.fn();
 const buildLifecycleStateCommentMock = vi.fn();
 const writeRuntimeReadinessSignalMock = vi.fn();
+const tryResolveRepositoryDefaultBranchMock = vi.fn();
 
 type MockIssue = {
   number: number;
@@ -109,6 +110,18 @@ vi.mock("./issues/runIssueCommand.js", () => ({
 
 vi.mock("./runtime/selfRestart.js", () => ({
   runPostMergeSelfRestart: runPostMergeSelfRestartMock,
+}));
+
+vi.mock("./runtime/defaultBranch.js", () => ({
+  buildMergedPullRequestReason: (defaultBranch: string | null | undefined) =>
+    defaultBranch && defaultBranch.trim().length > 0
+      ? `pull request merged into ${defaultBranch.trim()}`
+      : "pull request merged into repository default branch",
+  describeRepositoryDefaultBranch: (defaultBranch: string | null | undefined) =>
+    defaultBranch && defaultBranch.trim().length > 0
+      ? `\`${defaultBranch.trim()}\``
+      : "the repository default branch",
+  tryResolveRepositoryDefaultBranch: tryResolveRepositoryDefaultBranchMock,
 }));
 
 vi.mock("./challenges/challengeMetrics.js", () => ({
@@ -274,6 +287,8 @@ describe("main replenishment integration", () => {
       });
     runPostMergeSelfRestartMock.mockReset();
     runPostMergeSelfRestartMock.mockResolvedValue(undefined);
+    tryResolveRepositoryDefaultBranchMock.mockReset();
+    tryResolveRepositoryDefaultBranchMock.mockResolvedValue("main");
     getGitHubConfigMock.mockReset();
     getGitHubConfigMock.mockReturnValue({
       token: "token",

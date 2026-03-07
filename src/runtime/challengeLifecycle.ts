@@ -21,6 +21,7 @@ import {
 import { hasIssueLabel, isChallengeIssue } from "../issues/challengeIssue.js";
 import type { IssueSummary, TaskIssueManager } from "../issues/taskIssueManager.js";
 import { addIssueLifecycleComment } from "./issueLifecyclePresentation.js";
+import { describeRepositoryDefaultBranch } from "./defaultBranch.js";
 
 const CHALLENGE_MAX_ATTEMPTS = 3;
 const CHALLENGE_RETRY_COOLDOWN_MS = 60 * 60 * 1000;
@@ -140,10 +141,16 @@ export function buildChallengeRetryGateComment(issue: IssueSummary, decision: Ch
   ].join("\n");
 }
 
-function buildChallengeCompletionSummary(issue: IssueSummary, result: CodingAgentRunResult): string {
+function buildChallengeCompletionSummary(
+  issue: IssueSummary,
+  result: CodingAgentRunResult,
+  defaultBranch: string | null = null,
+): string {
   const reviewOutcome = result.summary.reviewOutcome;
   const validationStatus = result.summary.failedValidationCommands.length === 0 ? "all passed" : "had failures";
-  const mergeStatus = result.mergedPullRequest ? "merged into main" : "not merged in this run";
+  const mergeStatus = result.mergedPullRequest
+    ? `merged into ${describeRepositoryDefaultBranch(defaultBranch)}`
+    : "not merged in this run";
   return [
     "## Challenge Completion",
     `- Challenge issue #${issue.number} succeeded.`,
@@ -158,12 +165,16 @@ export async function finalizeChallengeSuccess(
   issueManager: TaskIssueManager,
   issue: IssueSummary,
   runResult: CodingAgentRunResult,
+  defaultBranch: string | null = null,
 ): Promise<boolean> {
   if (!isChallengeIssue(issue) || runResult.summary.reviewOutcome !== "accepted") {
     return false;
   }
 
-  const completionResult = await issueManager.markCompleted(issue.number, buildChallengeCompletionSummary(issue, runResult));
+  const completionResult = await issueManager.markCompleted(
+    issue.number,
+    buildChallengeCompletionSummary(issue, runResult, defaultBranch),
+  );
   const alreadyTerminal =
     /already marked as completed/i.test(completionResult.message) ||
     /is closed and cannot be completed/i.test(completionResult.message);

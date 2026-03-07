@@ -3,6 +3,7 @@ import type { CodingAgentRunResult } from "../agents/runCodingAgent.js";
 import type { IssueSummary, TaskIssueManager } from "../issues/taskIssueManager.js";
 import {
   addIssueLifecycleComment,
+  buildMergeOutcomeComment,
   buildIssueExecutionComment,
   buildIssueFailureComment,
   buildIssueStartComment,
@@ -118,6 +119,19 @@ describe("issueLifecyclePresentation", () => {
     expect(comment).toContain("### Challenge Attempt Artifact");
     expect(comment).toContain("Artifact path: `.evolvo/challenge-attempts/12/0001.json`");
     expect(comment).toContain("Runtime error message: none");
+  });
+
+  it("uses the resolved default branch in merge-related lifecycle comments", () => {
+    const issue = createIssue({ number: 21 });
+    const runResult = createRunResult();
+    runResult.summary.pullRequestCreated = true;
+    runResult.mergedPullRequest = true;
+
+    const executionComment = buildIssueExecutionComment(issue, runResult, null, "release");
+    const mergeComment = buildMergeOutcomeComment(issue, "release");
+
+    expect(executionComment).toContain("PR merged into `release`: yes.");
+    expect(mergeComment).toContain("Pull request for issue #21 was merged into `release`.");
   });
 
   it("builds failure comment with fallback unknown runtime message", () => {

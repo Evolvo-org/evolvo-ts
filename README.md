@@ -153,7 +153,8 @@ pnpm dev -- issues create "<title>" "<description>"
 
 Post-merge workflow runs:
 
-1. `git checkout main`
+1. `git checkout <repository default branch>`
+   The branch is detected from git remote metadata first, with GitHub repository metadata as a fallback.
 2. `git pull --ff-only`
 3. `pnpm i`
 4. `pnpm build`

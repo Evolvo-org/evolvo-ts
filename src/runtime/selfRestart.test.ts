@@ -5,6 +5,7 @@ const spawnMock = vi.fn();
 const rmMock = vi.fn();
 const getRuntimeReadinessSignalPathMock = vi.fn();
 const waitForRuntimeReadinessSignalMock = vi.fn();
+const resolveRepositoryDefaultBranchMock = vi.fn();
 
 vi.mock("node:child_process", () => ({
   execFile: execFileMock,
@@ -20,6 +21,10 @@ vi.mock("node:fs", () => ({
 vi.mock("./runtimeReadiness.js", () => ({
   getRuntimeReadinessSignalPath: getRuntimeReadinessSignalPathMock,
   waitForRuntimeReadinessSignal: waitForRuntimeReadinessSignalMock,
+}));
+
+vi.mock("./defaultBranch.js", () => ({
+  resolveRepositoryDefaultBranch: resolveRepositoryDefaultBranchMock,
 }));
 
 function createChildProcessStub(overrides: {
@@ -71,6 +76,8 @@ describe("runPostMergeSelfRestart", () => {
       pid: 1234,
       startedAt: "2026-01-01T00:00:00.000Z",
     });
+    resolveRepositoryDefaultBranchMock.mockReset();
+    resolveRepositoryDefaultBranchMock.mockResolvedValue("main");
     vi.spyOn(console, "log").mockImplementation(() => {});
   });
 
@@ -79,10 +86,11 @@ describe("runPostMergeSelfRestart", () => {
     vi.restoreAllMocks();
   });
 
-  it("runs checkout, pull, install, build and starts runtime", async () => {
+  it("runs checkout on the detected default branch, then pulls, installs, builds and starts runtime", async () => {
     execFileMock.mockImplementation((_command: string, _args: string[], _options: unknown, callback: (error: unknown, stdout: string, stderr: string) => void) => {
       callback(null, "", "");
     });
+    resolveRepositoryDefaultBranchMock.mockResolvedValueOnce("trunk");
     const onceHandlers: Record<string, (...args: unknown[]) => void> = {};
     const child = createChildProcessStub({
       once: vi.fn((event: string, handler: (...args: unknown[]) => void) => {
@@ -94,7 +102,8 @@ describe("runPostMergeSelfRestart", () => {
     const { runPostMergeSelfRestart } = await import("./selfRestart.js");
     await expect(runPostMergeSelfRestart("/tmp/evolvo")).resolves.toBeUndefined();
 
-    expect(execFileMock).toHaveBeenNthCalledWith(1, "git", ["checkout", "main"], { cwd: "/tmp/evolvo" }, expect.any(Function));
+    expect(resolveRepositoryDefaultBranchMock).toHaveBeenCalledWith("/tmp/evolvo");
+    expect(execFileMock).toHaveBeenNthCalledWith(1, "git", ["checkout", "trunk"], { cwd: "/tmp/evolvo" }, expect.any(Function));
     expect(execFileMock).toHaveBeenNthCalledWith(2, "git", ["pull", "--ff-only"], { cwd: "/tmp/evolvo" }, expect.any(Function));
     expect(execFileMock).toHaveBeenNthCalledWith(3, "pnpm", ["i"], { cwd: "/tmp/evolvo" }, expect.any(Function));
     expect(execFileMock).toHaveBeenNthCalledWith(4, "pnpm", ["build"], { cwd: "/tmp/evolvo" }, expect.any(Function));
@@ -128,11 +137,12 @@ describe("runPostMergeSelfRestart", () => {
       const error = Object.assign(new Error("failed"), { stderr: "checkout failed" });
       callback(error, "", "checkout failed");
     });
+    resolveRepositoryDefaultBranchMock.mockResolvedValueOnce("release");
 
     const { runPostMergeSelfRestart } = await import("./selfRestart.js");
 
     await expect(runPostMergeSelfRestart("/tmp/evolvo")).rejects.toThrow(
-      "Post-merge restart step failed: git checkout main. Output: checkout failed",
+      "Post-merge restart step failed: git checkout release. Output: checkout failed",
     );
     expect(spawnMock).not.toHaveBeenCalled();
   });
