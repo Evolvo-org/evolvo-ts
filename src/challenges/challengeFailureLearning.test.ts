@@ -30,7 +30,7 @@ describe("challengeFailureLearning", () => {
     const category = classifyChallengeFailure(
       null,
       createRunResult({
-        failedValidationCommands: [{ command: "pnpm test", exitCode: 1, durationMs: 100 }],
+        failedValidationCommands: [{ command: "pnpm test", commandName: "pnpm", exitCode: 1, durationMs: 100 }],
         reviewOutcome: "amended",
       }),
     );

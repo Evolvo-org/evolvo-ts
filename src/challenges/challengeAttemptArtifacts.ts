@@ -58,8 +58,12 @@ function formatAttemptFileName(attempt: number): string {
 }
 
 function normalizeCommand(command: CommandExecutionSummary): CommandExecutionSummary {
+  const commandName = typeof command.commandName === "string" && command.commandName.trim().length > 0
+    ? command.commandName
+    : String(command.command).trim().split(/\s+/, 1)[0] || "unknown";
   return {
     command: String(command.command),
+    commandName,
     exitCode: typeof command.exitCode === "number" ? Math.floor(command.exitCode) : null,
     durationMs: typeof command.durationMs === "number" && Number.isFinite(command.durationMs)
       ? Math.max(0, command.durationMs)

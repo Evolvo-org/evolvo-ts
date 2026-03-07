@@ -25,6 +25,7 @@ type CommandExecutionLogDetails = {
 
 export type CommandExecutionSummary = {
   command: string;
+  commandName: string;
   exitCode: number | null;
   durationMs: number | null;
 };
@@ -318,6 +319,7 @@ export async function runCodingAgent(prompt: string): Promise<CodingAgentRunResu
       if (event.item.type === "command_execution" && VALIDATION_COMMAND_PATTERN.test(event.item.command)) {
         const commandSummary: CommandExecutionSummary = {
           command: event.item.command,
+          commandName: getCommandName(event.item.command),
           exitCode: event.item.exit_code ?? null,
           durationMs: getCommandDurationMs(event.item.id, commandStartTimes),
         };

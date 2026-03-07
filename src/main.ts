@@ -271,8 +271,11 @@ function getCommandName(command: string): string {
 }
 
 function formatValidationCommand(command: CommandExecutionSummary): string {
+  const commandName = typeof command.commandName === "string" && command.commandName.trim().length > 0
+    ? command.commandName
+    : getCommandName(command.command);
   const exitCode = command.exitCode === null ? "unknown" : String(command.exitCode);
-  return `- \`${command.command}\` (name=${getCommandName(command.command)}, status=${exitCode}, elapsed=${formatDuration(command.durationMs)})`;
+  return `- \`${command.command}\` (name=${commandName}, status=${exitCode}, elapsed=${formatDuration(command.durationMs)})`;
 }
 
 function summarizeRetryNotes(result: CodingAgentRunResult): string {
