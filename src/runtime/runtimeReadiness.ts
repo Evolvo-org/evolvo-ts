@@ -1,5 +1,5 @@
 import { promises as fs } from "node:fs";
-import { dirname, join } from "node:path";
+import { basename, dirname, extname, join } from "node:path";
 
 const EVOLVO_DIRECTORY_NAME = ".evolvo";
 const RUNTIME_READINESS_FILE_NAME = "runtime-readiness.json";
@@ -38,6 +38,15 @@ function isRuntimeReadinessSignal(value: unknown): value is RuntimeReadinessSign
 
 export function getRuntimeReadinessSignalPath(workDir: string): string {
   return join(workDir, EVOLVO_DIRECTORY_NAME, RUNTIME_READINESS_FILE_NAME);
+}
+
+function buildRuntimeReadinessTempPath(signalPath: string, atMs = Date.now()): string {
+  const extension = extname(signalPath);
+  const fileName = basename(signalPath, extension);
+  return join(
+    dirname(signalPath),
+    `${fileName}.tmp-${Math.max(0, Math.floor(atMs))}-${process.pid}${extension}`,
+  );
 }
 
 async function readRuntimeReadinessSignal(signalPath: string): Promise<RuntimeReadinessSignal | null> {
@@ -81,7 +90,14 @@ export async function writeRuntimeReadinessSignal(options: {
     startedAt: new Date().toISOString(),
   };
   await fs.mkdir(dirname(signalPath), { recursive: true });
-  await fs.writeFile(signalPath, `${JSON.stringify(signal, null, 2)}\n`, "utf8");
+  const tempPath = buildRuntimeReadinessTempPath(signalPath);
+  try {
+    await fs.writeFile(tempPath, `${JSON.stringify(signal, null, 2)}\n`, "utf8");
+    await fs.rename(tempPath, signalPath);
+  } catch (error) {
+    await fs.rm(tempPath, { force: true }).catch(() => undefined);
+    throw error;
+  }
   return signalPath;
 }
 
