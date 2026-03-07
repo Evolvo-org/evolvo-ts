@@ -7,10 +7,13 @@ const DISCORD_CONTROL_CURSOR_FILE_NAME = "discord-control-cursor.json";
 const DISCORD_CONTROL_RECEIPTS_DIRECTORY_NAME = "discord-control-receipts";
 const GRACEFUL_SHUTDOWN_REQUEST_VERSION = 1;
 
+export type GracefulShutdownMode = "after-current-task" | "after-tasks";
+
 export type GracefulShutdownRequest = {
   version: typeof GRACEFUL_SHUTDOWN_REQUEST_VERSION;
   source: "discord";
-  command: "/quit";
+  command: "/quit" | "/quit after tasks";
+  mode: GracefulShutdownMode;
   messageId: string;
   requestedAt: string;
 };
@@ -38,7 +41,21 @@ function normalizeGracefulShutdownRequest(raw: unknown): GracefulShutdownRequest
 
   const candidate = raw as Partial<GracefulShutdownRequest>;
   const messageId = normalizeMessageId(candidate.messageId);
-  if (candidate.source !== "discord" || candidate.command !== "/quit" || messageId === null) {
+  if (candidate.source !== "discord" || messageId === null) {
+    return null;
+  }
+
+  let command: GracefulShutdownRequest["command"] | null = null;
+  let mode: GracefulShutdownMode | null = null;
+  if (candidate.command === "/quit after tasks") {
+    command = "/quit after tasks";
+    mode = "after-tasks";
+  } else if (candidate.command === "/quit") {
+    command = "/quit";
+    mode = candidate.mode === "after-tasks" ? "after-tasks" : "after-current-task";
+  }
+
+  if (command === null || mode === null) {
     return null;
   }
 
@@ -50,7 +67,8 @@ function normalizeGracefulShutdownRequest(raw: unknown): GracefulShutdownRequest
   return {
     version: GRACEFUL_SHUTDOWN_REQUEST_VERSION,
     source: "discord",
-    command: "/quit",
+    command,
+    mode,
     messageId,
     requestedAt,
   };
@@ -113,6 +131,7 @@ export async function recordGracefulShutdownRequest(
   input: {
     messageId: string;
     requestedAt?: string;
+    mode?: GracefulShutdownMode;
   },
 ): Promise<{ request: GracefulShutdownRequest; created: boolean }> {
   const existing = await readGracefulShutdownRequest(workDir);
@@ -128,16 +147,22 @@ export async function recordGracefulShutdownRequest(
   const requestedAt = isNonEmptyString(input.requestedAt)
     ? input.requestedAt.trim()
     : new Date().toISOString();
+  const mode = input.mode ?? "after-current-task";
 
   const request: GracefulShutdownRequest = {
     version: GRACEFUL_SHUTDOWN_REQUEST_VERSION,
     source: "discord",
-    command: "/quit",
+    command: mode === "after-tasks" ? "/quit after tasks" : "/quit",
+    mode,
     messageId,
     requestedAt,
   };
   await writeJsonFile(getGracefulShutdownRequestPath(workDir), request);
   return { request, created: true };
+}
+
+export async function clearGracefulShutdownRequest(workDir: string): Promise<void> {
+  await fs.rm(getGracefulShutdownRequestPath(workDir), { force: true });
 }
 
 export async function consumeGracefulShutdownRequest(workDir: string): Promise<GracefulShutdownRequest | null> {
@@ -146,7 +171,7 @@ export async function consumeGracefulShutdownRequest(workDir: string): Promise<G
     return null;
   }
 
-  await fs.rm(getGracefulShutdownRequestPath(workDir), { force: true });
+  await clearGracefulShutdownRequest(workDir);
   return request;
 }
 
