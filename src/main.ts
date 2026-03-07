@@ -9,6 +9,7 @@ import { getGitHubConfig } from "./github/githubConfig.js";
 import { GitHubApiError, GitHubClient } from "./github/githubClient.js";
 import { TaskIssueManager, type IssueSummary } from "./issues/taskIssueManager.js";
 import { generateStartupIssueTemplates } from "./issues/startupIssueBootstrap.js";
+import type { CodingAgentRunResult, CommandExecutionSummary } from "./agents/runCodingAgent.js";
 
 export const DEFAULT_PROMPT = "No open issues available. Create an issue first.";
 const MAX_ISSUE_CYCLES = 25;
@@ -43,6 +44,127 @@ function buildPromptFromIssue(issue: IssueSummary): string {
 
 function formatIssueForLog(issue: IssueSummary): string {
   return `#${issue.number} ${issue.title}`;
+}
+
+function formatDuration(durationMs: number | null): string {
+  if (durationMs === null || !Number.isFinite(durationMs) || durationMs < 0) {
+    return "unknown";
+  }
+
+  return `${Math.round(durationMs)}ms`;
+}
+
+function formatValidationCommand(command: CommandExecutionSummary): string {
+  const exitCode = command.exitCode === null ? "unknown" : String(command.exitCode);
+  return `- \`${command.command}\` (exit=${exitCode}, duration=${formatDuration(command.durationMs)})`;
+}
+
+function summarizeRetryNotes(result: CodingAgentRunResult): string {
+  if (result.summary.failedValidationCommands.length === 0) {
+    return "- No amendment/retry cycle was detected.";
+  }
+
+  return `- Validation had ${result.summary.failedValidationCommands.length} failing command(s), indicating amendment/retry activity.`;
+}
+
+function formatFinalResponseExcerpt(response: string): string {
+  const normalized = response.replace(/\s+/g, " ").trim();
+  if (!normalized) {
+    return "No final assistant summary captured.";
+  }
+
+  const maxLength = 280;
+  if (normalized.length <= maxLength) {
+    return normalized;
+  }
+
+  return `${normalized.slice(0, maxLength - 3)}...`;
+}
+
+function buildIssueStartComment(issue: IssueSummary): string {
+  return [
+    "## Task Start",
+    `- Started work on issue #${issue.number}: ${issue.title}.`,
+    "- Initial assessment: inspect related files, apply a focused implementation, then validate and review.",
+    "- Planned lifecycle logging: inspection, implementation decisions, validation steps/results, review outcome, PR/merge status, completion summary.",
+  ].join("\n");
+}
+
+function buildIssueExecutionComment(issue: IssueSummary, result: CodingAgentRunResult): string {
+  const inspectedAreas = result.summary.inspectedAreas.length > 0
+    ? result.summary.inspectedAreas.map((area) => `- \`${area}\``)
+    : ["- No explicit file/area inspection commands were captured."];
+  const editedFiles = result.summary.editedFiles.length > 0
+    ? result.summary.editedFiles.map((path) => `- \`${path}\``)
+    : ["- No repository edits were captured in this run."];
+  const validationLines = result.summary.validationCommands.length > 0
+    ? result.summary.validationCommands.map(formatValidationCommand)
+    : ["- No validation command was captured."];
+  const prLines = [
+    `- PR created: ${result.summary.pullRequestCreated ? "yes" : "no"}.`,
+    `- PR merged into main: ${result.mergedPullRequest ? "yes" : "no"}.`,
+  ];
+
+  return [
+    "## Task Execution Log",
+    "",
+    "### Inspection",
+    ...inspectedAreas,
+    "",
+    "### Implementation",
+    ...editedFiles,
+    "",
+    "### Validation",
+    ...validationLines,
+    "",
+    "### Review",
+    `- Review outcome: ${result.summary.reviewOutcome}.`,
+    summarizeRetryNotes(result),
+    "",
+    "### Pull Request",
+    ...prLines,
+    "",
+    "### Completion Summary",
+    `- Issue #${issue.number} execution cycle finished with outcome: ${result.summary.reviewOutcome}.`,
+    `- Agent final summary: ${formatFinalResponseExcerpt(result.summary.finalResponse)}`,
+  ].join("\n");
+}
+
+function buildIssueFailureComment(issue: IssueSummary, error: unknown): string {
+  const message = error instanceof Error ? error.message : "Unknown runtime error.";
+  return [
+    "## Task Execution Problem",
+    `- Issue #${issue.number} hit an execution error: ${message}`,
+    "- Action: run interrupted; follow-up retry/amendment is required.",
+  ].join("\n");
+}
+
+function buildMergeOutcomeComment(issue: IssueSummary): string {
+  return [
+    "## Merge Outcome",
+    `- Pull request for issue #${issue.number} was merged into main.`,
+    "- Runtime will exit so the host can perform post-merge restart orchestration.",
+  ].join("\n");
+}
+
+async function addIssueLifecycleComment(
+  issueManager: TaskIssueManager,
+  issueNumber: number,
+  comment: string,
+): Promise<void> {
+  try {
+    const result = await issueManager.addProgressComment(issueNumber, comment);
+    if (!result.ok) {
+      console.error(`Could not add lifecycle comment to issue #${issueNumber}: ${result.message}`);
+    }
+  } catch (error) {
+    if (error instanceof Error) {
+      console.error(`Could not add lifecycle comment to issue #${issueNumber}: ${error.message}`);
+      return;
+    }
+
+    console.error(`Could not add lifecycle comment to issue #${issueNumber}: unknown error.`);
+  }
 }
 
 function logCreatedIssues(issues: IssueSummary[]): void {
@@ -160,15 +282,29 @@ export async function main(): Promise<void> {
         }
       }
 
+      await addIssueLifecycleComment(issueManager, selectedIssue.number, buildIssueStartComment(selectedIssue));
+
       const prompt = buildPromptFromIssue(selectedIssue);
       console.log(`Prompt: ${prompt}`);
 
+      let runError: unknown = null;
       const runResult = await runCodingAgent(prompt).catch((error) => {
+        runError = error;
         console.error("Error running the coding agent:", error);
         return null;
       });
 
+      if (runError) {
+        await addIssueLifecycleComment(issueManager, selectedIssue.number, buildIssueFailureComment(selectedIssue, runError));
+        continue;
+      }
+
+      if (runResult) {
+        await addIssueLifecycleComment(issueManager, selectedIssue.number, buildIssueExecutionComment(selectedIssue, runResult));
+      }
+
       if (runResult?.mergedPullRequest) {
+        await addIssueLifecycleComment(issueManager, selectedIssue.number, buildMergeOutcomeComment(selectedIssue));
         console.log("Merged pull request detected. Running post-merge restart workflow.");
         try {
           await runPostMergeSelfRestart(WORK_DIR);
