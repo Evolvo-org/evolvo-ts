@@ -12,6 +12,10 @@ import {
   type CanonicalLifecycleState,
 } from "./runtime/lifecycleState.js";
 import { writeRuntimeReadinessSignal } from "./runtime/runtimeReadiness.js";
+import {
+  buildMergedPullRequestReason,
+  tryResolveRepositoryDefaultBranch,
+} from "./runtime/defaultBranch.js";
 import { runPostMergeSelfRestart } from "./runtime/selfRestart.js";
 import {
   DEFAULT_PROMPT as LOOP_DEFAULT_PROMPT,
@@ -318,7 +322,11 @@ export async function main(): Promise<void> {
           continue issueCycleLoop;
         }
 
+        let mergedDefaultBranch: string | null = null;
         if (runResult) {
+          mergedDefaultBranch = runResult.mergedPullRequest
+            ? await tryResolveRepositoryDefaultBranch(WORK_DIR)
+            : null;
           await transitionIssueLifecycleState(issueManager, {
             issue: selectedIssue,
             nextState: "under_review",
@@ -356,9 +364,14 @@ export async function main(): Promise<void> {
           await addIssueLifecycleComment(
             issueManager,
             selectedIssue.number,
-            buildIssueExecutionComment(selectedIssue, runResult, challengeEvidence),
+            buildIssueExecutionComment(selectedIssue, runResult, challengeEvidence, mergedDefaultBranch),
           );
-          const challengeCompleted = await finalizeChallengeSuccess(issueManager, selectedIssue, runResult);
+          const challengeCompleted = await finalizeChallengeSuccess(
+            issueManager,
+            selectedIssue,
+            runResult,
+            mergedDefaultBranch,
+          );
           if (challengeCompleted) {
             await transitionIssueLifecycleState(issueManager, {
               issue: selectedIssue,
@@ -374,11 +387,15 @@ export async function main(): Promise<void> {
           await transitionIssueLifecycleState(issueManager, {
             issue: selectedIssue,
             nextState: "merged",
-            reason: "pull request merged into main",
+            reason: buildMergedPullRequestReason(mergedDefaultBranch),
             cycle,
             runResult,
           });
-          await addIssueLifecycleComment(issueManager, selectedIssue.number, buildMergeOutcomeComment(selectedIssue));
+          await addIssueLifecycleComment(
+            issueManager,
+            selectedIssue.number,
+            buildMergeOutcomeComment(selectedIssue, mergedDefaultBranch),
+          );
           console.log("Merged pull request detected. Running post-merge restart workflow.");
           try {
             await runPostMergeSelfRestart(WORK_DIR);

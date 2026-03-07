@@ -2,6 +2,7 @@ import type { CodingAgentRunResult, CommandExecutionSummary } from "../agents/ru
 import { persistChallengeAttemptArtifact } from "../challenges/challengeAttemptArtifacts.js";
 import { isChallengeIssue } from "../issues/challengeIssue.js";
 import type { TaskIssueManager, IssueSummary } from "../issues/taskIssueManager.js";
+import { describeRepositoryDefaultBranch } from "./defaultBranch.js";
 
 export type ChallengeAttemptEvidence = {
   artifactPath: string;
@@ -153,6 +154,7 @@ export function buildIssueExecutionComment(
   issue: IssueSummary,
   result: CodingAgentRunResult,
   challengeEvidence: ChallengeAttemptEvidence | null,
+  defaultBranch: string | null = null,
 ): string {
   const inspectedAreas = result.summary.inspectedAreas.length > 0
     ? result.summary.inspectedAreas.map((area) => `- \`${area}\``)
@@ -165,7 +167,7 @@ export function buildIssueExecutionComment(
     : ["- No validation command was captured."];
   const prLines = [
     `- PR created: ${result.summary.pullRequestCreated ? "yes" : "no"}.`,
-    `- PR merged into main: ${result.mergedPullRequest ? "yes" : "no"}.`,
+    `- PR merged into ${describeRepositoryDefaultBranch(defaultBranch)}: ${result.mergedPullRequest ? "yes" : "no"}.`,
   ];
   const externalRepositoryLines = result.summary.externalRepositories.length > 0
     ? result.summary.externalRepositories.map((url) => `- ${url}`)
@@ -224,10 +226,10 @@ export function buildIssueFailureComment(
   ].join("\n");
 }
 
-export function buildMergeOutcomeComment(issue: IssueSummary): string {
+export function buildMergeOutcomeComment(issue: IssueSummary, defaultBranch: string | null = null): string {
   return [
     "## Merge Outcome",
-    `- Pull request for issue #${issue.number} was merged into main.`,
+    `- Pull request for issue #${issue.number} was merged into ${describeRepositoryDefaultBranch(defaultBranch)}.`,
     "- Runtime will exit so the host can perform post-merge restart orchestration.",
   ].join("\n");
 }

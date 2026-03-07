@@ -2,6 +2,7 @@ import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import { promisify } from "node:util";
+import { resolveRepositoryDefaultBranch } from "./defaultBranch.js";
 import { getRuntimeReadinessSignalPath, waitForRuntimeReadinessSignal } from "./runtimeReadiness.js";
 
 const execFileAsync = promisify(execFile);
@@ -114,7 +115,8 @@ async function startUpdatedRuntime(workingDirectory: string): Promise<void> {
 }
 
 export async function runPostMergeSelfRestart(workingDirectory: string): Promise<void> {
-  await runStep("git", ["checkout", "main"], workingDirectory);
+  const defaultBranch = await resolveRepositoryDefaultBranch(workingDirectory);
+  await runStep("git", ["checkout", defaultBranch], workingDirectory);
   await runStep("git", ["pull", "--ff-only"], workingDirectory);
   await runStep("pnpm", ["i"], workingDirectory);
   await runStep("pnpm", ["build"], workingDirectory);

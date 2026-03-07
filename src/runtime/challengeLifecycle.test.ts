@@ -174,6 +174,21 @@ describe("challengeLifecycle", () => {
     );
   });
 
+  it("uses the resolved default branch in challenge completion summaries", async () => {
+    const issueManager = createIssueManager();
+    const issue = createIssue({ number: 48 });
+    const runResult = createRunResult({ reviewOutcome: "accepted" });
+    runResult.mergedPullRequest = true;
+
+    const completed = await finalizeChallengeSuccess(issueManager, issue, runResult, "release");
+
+    expect(completed).toBe(true);
+    expect(issueManager.markCompleted).toHaveBeenCalledWith(
+      issue.number,
+      expect.stringContaining("Pull request status: merged into `release`."),
+    );
+  });
+
   it("treats already-terminal completion response as success", async () => {
     const issueManager = createIssueManager();
     vi.mocked(issueManager.markCompleted).mockResolvedValueOnce({
