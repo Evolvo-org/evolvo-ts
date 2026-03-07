@@ -18,9 +18,9 @@ afterEach(async () => {
 });
 
 describe("generateStartupIssueTemplates", () => {
-  it("derives startup issues from repository signals", async () => {
+  it("derives startup issues from repository-wide signals", async () => {
     const repoRoot = await createTempRepo();
-    await mkdir(join(repoRoot, "src"), { recursive: true });
+    await mkdir(join(repoRoot, "packages", "core"), { recursive: true });
     await writeFile(
       join(repoRoot, "package.json"),
       JSON.stringify(
@@ -35,7 +35,7 @@ describe("generateStartupIssueTemplates", () => {
       ),
     );
     await writeFile(join(repoRoot, "README.md"), "short");
-    await writeFile(join(repoRoot, "src", "orchestration.ts"), "export const value = 1;\n");
+    await writeFile(join(repoRoot, "packages", "core", "orchestration.ts"), "export const value = 1;\n");
 
     const templates = await generateStartupIssueTemplates(repoRoot, { targetCount: 3 });
 
@@ -43,11 +43,11 @@ describe("generateStartupIssueTemplates", () => {
     expect(templates.map((template) => template.title)).toEqual([
       "Add a dedicated typecheck script to validation workflow",
       "Add CI workflow for build and test validation",
-      "Add regression tests for src/orchestration.ts",
+      "Add regression tests for packages/core/orchestration.ts",
     ]);
   });
 
-  it("falls back to built-in templates when repository signals are insufficient", async () => {
+  it("returns an empty list when no repository-derived candidates are found", async () => {
     const repoRoot = await createTempRepo();
     await mkdir(join(repoRoot, ".github", "workflows"), { recursive: true });
     await mkdir(join(repoRoot, "src"), { recursive: true });
@@ -64,18 +64,21 @@ describe("generateStartupIssueTemplates", () => {
         2,
       ),
     );
-    await writeFile(join(repoRoot, "README.md"), "This readme is intentionally long enough to skip docs bootstrap.".repeat(3));
+    await writeFile(join(repoRoot, "README.md"), "This readme is intentionally long enough to skip docs bootstrap.".repeat(4));
     await writeFile(join(repoRoot, "src", "index.ts"), "export const value = 1;\n");
     await writeFile(join(repoRoot, "src", "index.test.ts"), "import { expect, it } from \"vitest\";\nit(\"ok\", () => { expect(true).toBe(true); });\n");
 
     const templates = await generateStartupIssueTemplates(repoRoot, { targetCount: 3 });
 
-    expect(templates).toHaveLength(3);
-    expect(templates[0]?.title).toBe("Harden startup diagnostics when bootstrap issue creation fails");
+    expect(templates).toEqual([]);
   });
 
-  it("returns deterministic bounded templates when repository files are mostly missing", async () => {
+  it("returns deterministic bounded templates for repeated repository analysis", async () => {
     const repoRoot = await createTempRepo();
+    await mkdir(join(repoRoot, "src"), { recursive: true });
+    await writeFile(join(repoRoot, "src", "a.ts"), "export const a = 1;\n");
+    await writeFile(join(repoRoot, "src", "b.ts"), "export const b = 2;\n");
+    await writeFile(join(repoRoot, "src", "c.ts"), "export const c = 3;\n");
 
     const first = await generateStartupIssueTemplates(repoRoot, { targetCount: 5 });
     const second = await generateStartupIssueTemplates(repoRoot, { targetCount: 5 });
@@ -85,9 +88,9 @@ describe("generateStartupIssueTemplates", () => {
     expect(first.map((template) => template.title)).toEqual([
       "Add a dedicated typecheck script to validation workflow",
       "Add CI workflow for build and test validation",
-      "Harden startup diagnostics when bootstrap issue creation fails",
-      "Add startup bootstrap integration test for empty-repo issue queue",
-      "Emit per-cycle summary logs for issue queue health",
+      "Add regression tests for src/a.ts",
+      "Add regression tests for src/b.ts",
+      "Add regression tests for src/c.ts",
     ]);
   });
 
@@ -116,41 +119,6 @@ describe("generateStartupIssueTemplates", () => {
 
     const templates = await generateStartupIssueTemplates(repoRoot, { targetCount: 3 });
 
-    expect(templates).toHaveLength(3);
-    expect(templates[0]?.title).toBe("Harden startup diagnostics when bootstrap issue creation fails");
-  });
-
-  it("deduplicates duplicate fallback template titles", async () => {
-    const repoRoot = await createTempRepo();
-    await mkdir(join(repoRoot, ".github", "workflows"), { recursive: true });
-    await mkdir(join(repoRoot, "src"), { recursive: true });
-    await writeFile(
-      join(repoRoot, "package.json"),
-      JSON.stringify(
-        {
-          name: "repo",
-          scripts: {
-            typecheck: "tsc --noEmit",
-          },
-        },
-        null,
-        2,
-      ),
-    );
-    await writeFile(join(repoRoot, "README.md"), "This readme is intentionally long enough to skip docs bootstrap.".repeat(3));
-    await writeFile(join(repoRoot, "src", "index.ts"), "export const value = 1;\n");
-    await writeFile(join(repoRoot, "src", "index.test.ts"), "import { expect, it } from \"vitest\";\nit(\"ok\", () => { expect(true).toBe(true); });\n");
-
-    const templates = await generateStartupIssueTemplates(repoRoot, {
-      targetCount: 3,
-      fallbackTemplates: [
-        { title: "Alpha", description: "A" },
-        { title: " alpha ", description: "A duplicate with spacing and casing" },
-        { title: "Beta", description: "B" },
-        { title: "Gamma", description: "C" },
-      ],
-    });
-
-    expect(templates.map((template) => template.title)).toEqual(["Alpha", "Beta", "Gamma"]);
+    expect(templates).toEqual([]);
   });
 });

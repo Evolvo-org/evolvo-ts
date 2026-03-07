@@ -37,9 +37,9 @@ export async function runPlannerAgent(input: PlannerAgentInput): Promise<Planner
     });
   } catch (error) {
     if (error instanceof Error) {
-      console.error(`Queue analysis for replenishment templates failed: ${error.message}`);
+      console.error(`Queue repository analysis failed during replenishment planning: ${error.message}`);
     } else {
-      console.error("Queue analysis for replenishment templates failed with an unknown error.");
+      console.error("Queue repository analysis failed during replenishment planning with an unknown error.");
     }
   }
 
@@ -47,7 +47,7 @@ export async function runPlannerAgent(input: PlannerAgentInput): Promise<Planner
     await input.issueManager.replenishSelfImprovementIssues({
       minimumIssueCount: input.minimumIssueCount,
       maximumOpenIssues: input.maximumOpenIssues,
-      ...(plannerTemplates && plannerTemplates.length > 0 ? { templates: plannerTemplates } : {}),
+      templates: plannerTemplates ?? [],
     })
   ).created;
 

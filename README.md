@@ -54,7 +54,7 @@ On `pnpm dev` / `pnpm start`, the runtime:
    - prefer an issue labeled `in progress`
    - otherwise pick the first non-`completed` issue
 6. If no actionable issue exists:
-   - on first cycle with zero open issues, bootstrap issue templates from repository analysis
+   - on first cycle with zero open issues, bootstrap repository-derived issue candidates from a full repository scan
    - otherwise replenish queue with a minimum target of `3` open tasks and a hard cap of `5` open tasks
 7. Builds the prompt from selected issue title + description and executes a Codex run.
 

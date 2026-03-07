@@ -74,7 +74,7 @@ describe("plannerAgent", () => {
     expect(result.created).toEqual([{ number: 21, title: "Planned A", description: "A", state: "open", labels: [] }]);
   });
 
-  it("falls back to default replenishment when repository analysis fails", async () => {
+  it("passes an empty candidate set when repository analysis fails", async () => {
     generateStartupIssueTemplatesMock.mockRejectedValueOnce(new Error("analysis failed"));
     const replenishMock = vi.fn().mockResolvedValueOnce({
       created: [{ number: 22, title: "Fallback", description: "B", state: "open", labels: [] }],
@@ -94,10 +94,11 @@ describe("plannerAgent", () => {
       workDir: "/tmp/evolvo",
     });
 
-    expect(errorSpy).toHaveBeenCalledWith("Queue analysis for replenishment templates failed: analysis failed");
+    expect(errorSpy).toHaveBeenCalledWith("Queue repository analysis failed during replenishment planning: analysis failed");
     expect(replenishMock).toHaveBeenCalledWith({
       minimumIssueCount: 3,
       maximumOpenIssues: 5,
+      templates: [],
     });
     expect(result.created).toEqual([{ number: 22, title: "Fallback", description: "B", state: "open", labels: [] }]);
   });

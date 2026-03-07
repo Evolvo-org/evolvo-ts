@@ -103,20 +103,25 @@ describe("TaskIssueManager", () => {
     ]);
   });
 
-  it("replenishes empty queue with at least three unique self-improvement issues", async () => {
+  it("replenishes empty queue with provided repository-derived candidates", async () => {
     const client = createClientMock();
     client.get
       .mockResolvedValueOnce([])
       .mockResolvedValueOnce([]);
     client.post
-      .mockResolvedValueOnce(createIssue({ number: 21, title: "Harden run loop retry handling for transient GitHub failures" }))
-      .mockResolvedValueOnce(createIssue({ number: 22, title: "Add regression test for empty-queue issue replenishment flow" }))
-      .mockResolvedValueOnce(createIssue({ number: 23, title: "Improve validation reporting with command, exit code, and duration" }));
+      .mockResolvedValueOnce(createIssue({ number: 21, title: "Candidate A" }))
+      .mockResolvedValueOnce(createIssue({ number: 22, title: "Candidate B" }))
+      .mockResolvedValueOnce(createIssue({ number: 23, title: "Candidate C" }));
     const manager = new TaskIssueManager(client as never);
 
     const result = await manager.replenishSelfImprovementIssues({
       minimumIssueCount: 3,
       maximumOpenIssues: 5,
+      templates: [
+        { title: "Candidate A", description: "A" },
+        { title: "Candidate B", description: "B" },
+        { title: "Candidate C", description: "C" },
+      ],
     });
 
     expect(result.created).toHaveLength(3);
@@ -125,7 +130,7 @@ describe("TaskIssueManager", () => {
     expect(client.get).toHaveBeenNthCalledWith(2, "?state=closed&sort=updated&direction=desc&per_page=100&page=1");
   });
 
-  it("prioritizes evidence-backed templates from recurring workflow failures", async () => {
+  it("prioritizes evidence-backed candidates from recurring workflow failures", async () => {
     const client = createClientMock();
     client.get
       .mockResolvedValueOnce([])
@@ -138,20 +143,24 @@ describe("TaskIssueManager", () => {
         }),
       ]);
     client.post.mockResolvedValueOnce(
-      createIssue({ number: 31, title: "Harden run loop retry handling for transient GitHub failures" }),
+      createIssue({ number: 31, title: "Workflow reliability candidate" }),
     );
     const manager = new TaskIssueManager(client as never);
 
     const result = await manager.replenishSelfImprovementIssues({
       minimumIssueCount: 1,
       maximumOpenIssues: 5,
+      templates: [
+        { title: "Validation candidate", description: "Validation and typecheck coverage hardening." },
+        { title: "Workflow reliability candidate", description: "Workflow retry and merge reliability." },
+      ],
     });
 
     expect(result.created).toHaveLength(1);
-    expect(result.created[0]?.title).toBe("Harden run loop retry handling for transient GitHub failures");
+    expect(result.created[0]?.title).toBe("Workflow reliability candidate");
     expect(client.post).toHaveBeenCalledWith(
       "",
-      expect.objectContaining({ title: "Harden run loop retry handling for transient GitHub failures" }),
+      expect.objectContaining({ title: "Workflow reliability candidate" }),
     );
   });
 
@@ -164,23 +173,27 @@ describe("TaskIssueManager", () => {
         createIssue({ number: 3, title: "Third open issue" }),
       ])
       .mockResolvedValueOnce([
-        createIssue({ number: 4, state: "closed", title: "Harden run loop retry handling for transient GitHub failures" }),
+        createIssue({ number: 4, state: "closed", title: "Candidate A" }),
       ]);
-    client.post.mockResolvedValue(createIssue({ number: 31, title: "Harden run loop retry handling for transient GitHub failures (follow-up 1)" }));
+    client.post.mockResolvedValue(createIssue({ number: 31, title: "Candidate A (follow-up 1)" }));
     const manager = new TaskIssueManager(client as never);
 
     const result = await manager.replenishSelfImprovementIssues({
       minimumIssueCount: 3,
       maximumOpenIssues: 4,
+      templates: [
+        { title: "Candidate A", description: "A" },
+        { title: "Candidate B", description: "B" },
+      ],
     });
 
     expect(result.created).toHaveLength(1);
     expect(result.created[0]?.number).toBe(31);
-    expect(result.created[0]?.title).toBe("Harden run loop retry handling for transient GitHub failures (follow-up 1)");
+    expect(result.created[0]?.title).toBe("Candidate A (follow-up 1)");
     expect(client.post).toHaveBeenCalledTimes(1);
     expect(client.post).toHaveBeenCalledWith(
       "",
-      expect.objectContaining({ title: "Harden run loop retry handling for transient GitHub failures (follow-up 1)" }),
+      expect.objectContaining({ title: "Candidate A (follow-up 1)" }),
     );
   });
 
@@ -212,6 +225,21 @@ describe("TaskIssueManager", () => {
       "Harden startup fallback diagnostics",
     ]);
     expect(client.post).toHaveBeenCalledTimes(3);
+  });
+
+  it("returns no new issues when no repository-derived candidates are provided", async () => {
+    const client = createClientMock();
+    const manager = new TaskIssueManager(client as never);
+
+    const result = await manager.replenishSelfImprovementIssues({
+      minimumIssueCount: 3,
+      maximumOpenIssues: 5,
+      templates: [],
+    });
+
+    expect(result).toEqual({ created: [] });
+    expect(client.get).not.toHaveBeenCalled();
+    expect(client.post).not.toHaveBeenCalled();
   });
 
   it("exits safely with no creations when duplicate history exhausts bounded attempts", async () => {
