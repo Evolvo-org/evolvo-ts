@@ -8,13 +8,33 @@ const codex = new Codex();
 let activeThread: Thread | null = null;
 const MERGE_PR_COMMAND_PATTERN = /\bgh\s+pr\s+merge\b/i;
 const MERGE_PR_MESSAGE_PATTERN = /\bmerged (the )?pull request\b|\bmerged .* into main\b/i;
+const CREATE_PR_COMMAND_PATTERN = /\bgh\s+pr\s+create\b/i;
+const INSPECTION_COMMAND_PATTERN = /\b(rg|grep|cat|sed|ls|find|fd|tree|git\s+status|git\s+diff|git\s+show)\b/i;
+const VALIDATION_COMMAND_PATTERN = /\b(validate|test|vitest|jest|typecheck|lint|build|tsc|pytest|go test|cargo test)\b/i;
 
 export type CodingAgentRunResult = {
   mergedPullRequest: boolean;
+  summary: CodingAgentRunSummary;
 };
 
 type CommandExecutionLogDetails = {
   startedAtMs?: number;
+};
+
+export type CommandExecutionSummary = {
+  command: string;
+  exitCode: number | null;
+  durationMs: number | null;
+};
+
+export type CodingAgentRunSummary = {
+  inspectedAreas: string[];
+  editedFiles: string[];
+  validationCommands: CommandExecutionSummary[];
+  failedValidationCommands: CommandExecutionSummary[];
+  reviewOutcome: "accepted" | "amended";
+  pullRequestCreated: boolean;
+  finalResponse: string;
 };
 
 function getThread(): Thread {
@@ -45,6 +65,45 @@ function formatDuration(durationMs: number | undefined): string {
   }
 
   return `${Math.round(durationMs)}ms`;
+}
+
+function getCommandDurationMs(itemId: string, commandStartTimes: Map<string, number>): number | null {
+  const startedAtMs = commandStartTimes.get(itemId);
+  if (startedAtMs === undefined) {
+    return null;
+  }
+
+  const durationMs = Date.now() - startedAtMs;
+  if (!Number.isFinite(durationMs) || durationMs < 0) {
+    return null;
+  }
+
+  return durationMs;
+}
+
+function extractCommandTargets(command: string): string[] {
+  const targets = new Set<string>();
+  for (const rawToken of command.split(/\s+/)) {
+    const token = rawToken.trim();
+    if (!token || token.startsWith("-")) {
+      continue;
+    }
+
+    if (
+      token.startsWith("src/") ||
+      token.startsWith("./") ||
+      token.startsWith("../") ||
+      /\.(ts|tsx|js|jsx|json|md|yml|yaml|sh)$/i.test(token)
+    ) {
+      targets.add(token.replace(/[",':;]+$/g, ""));
+    }
+  }
+
+  return [...targets];
+}
+
+function summarizeReviewOutcome(validationCommands: CommandExecutionSummary[]): "accepted" | "amended" {
+  return validationCommands.some((command) => command.exitCode !== 0) ? "amended" : "accepted";
 }
 
 function logCompletedItem(item: ThreadItem, details?: CommandExecutionLogDetails): void {
@@ -105,8 +164,13 @@ export async function runCodingAgent(prompt: string): Promise<CodingAgentRunResu
   const startedItems = new Set<string>();
   const completedItems = new Set<string>();
   const commandStartTimes = new Map<string, number>();
+  const inspectedAreas = new Set<string>();
+  const editedFiles = new Set<string>();
+  const validationCommands: CommandExecutionSummary[] = [];
+  const failedValidationCommands: CommandExecutionSummary[] = [];
   let fileChangeSeen = false;
   let mergedPullRequest = false;
+  let pullRequestCreated = false;
   let finalResponse = "";
 
   for await (const event of events) {
@@ -159,11 +223,39 @@ export async function runCodingAgent(prompt: string): Promise<CodingAgentRunResu
         mergedPullRequest = true;
       }
 
+      if (event.item.type === "command_execution" && CREATE_PR_COMMAND_PATTERN.test(event.item.command)) {
+        pullRequestCreated = true;
+      }
+
+      if (event.item.type === "command_execution" && INSPECTION_COMMAND_PATTERN.test(event.item.command)) {
+        for (const target of extractCommandTargets(event.item.command)) {
+          inspectedAreas.add(target);
+        }
+      }
+
+      if (event.item.type === "command_execution" && VALIDATION_COMMAND_PATTERN.test(event.item.command)) {
+        const commandSummary: CommandExecutionSummary = {
+          command: event.item.command,
+          exitCode: event.item.exit_code ?? null,
+          durationMs: getCommandDurationMs(event.item.id, commandStartTimes),
+        };
+        validationCommands.push(commandSummary);
+        if (commandSummary.exitCode !== 0) {
+          failedValidationCommands.push(commandSummary);
+        }
+      }
+
       const details = event.item.type === "command_execution"
         ? { startedAtMs: commandStartTimes.get(event.item.id) }
         : undefined;
       if (event.item.type === "command_execution") {
         commandStartTimes.delete(event.item.id);
+      }
+
+      if (event.item.type === "file_change" && event.item.status === "completed") {
+        for (const change of event.item.changes) {
+          editedFiles.add(change.path);
+        }
       }
 
       logCompletedItem(event.item, details);
@@ -185,7 +277,18 @@ export async function runCodingAgent(prompt: string): Promise<CodingAgentRunResu
 
   if (fileChangeSeen) {
     console.log("\n[file_change] One or more repository edits were executed.");
-    return { mergedPullRequest };
+    return {
+      mergedPullRequest,
+      summary: {
+        inspectedAreas: [...inspectedAreas],
+        editedFiles: [...editedFiles],
+        validationCommands,
+        failedValidationCommands,
+        reviewOutcome: summarizeReviewOutcome(validationCommands),
+        pullRequestCreated,
+        finalResponse,
+      },
+    };
   }
 
   console.log("\n[file_change] No repository edits were detected.");
@@ -194,5 +297,16 @@ export async function runCodingAgent(prompt: string): Promise<CodingAgentRunResu
     throw new Error("The Codex run did not make repository edits for a file-edit request.");
   }
 
-  return { mergedPullRequest };
+  return {
+    mergedPullRequest,
+    summary: {
+      inspectedAreas: [...inspectedAreas],
+      editedFiles: [...editedFiles],
+      validationCommands,
+      failedValidationCommands,
+      reviewOutcome: summarizeReviewOutcome(validationCommands),
+      pullRequestCreated,
+      finalResponse,
+    },
+  };
 }

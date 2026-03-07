@@ -65,7 +65,14 @@ describe("runCodingAgent", () => {
 
     await expect(
       runCodingAgent("Create src/utils/add.ts"),
-    ).resolves.toEqual({ mergedPullRequest: false });
+    ).resolves.toEqual(
+      expect.objectContaining({
+        mergedPullRequest: false,
+        summary: expect.objectContaining({
+          editedFiles: ["src/utils/add.ts"],
+        }),
+      }),
+    );
 
     expect(startThreadMock).toHaveBeenCalledTimes(1);
     expect(runStreamedMock).toHaveBeenCalledWith("PROMPT:Create src/utils/add.ts");
@@ -108,7 +115,14 @@ describe("runCodingAgent", () => {
 
     await expect(
       runCodingAgent("Summarize the repository"),
-    ).resolves.toEqual({ mergedPullRequest: false });
+    ).resolves.toEqual(
+      expect.objectContaining({
+        mergedPullRequest: false,
+        summary: expect.objectContaining({
+          reviewOutcome: "accepted",
+        }),
+      }),
+    );
   });
 
   it("flags successful pull request merges from command events", async () => {
@@ -136,7 +150,14 @@ describe("runCodingAgent", () => {
 
     const { runCodingAgent } = await import("./runCodingAgent.js");
 
-    await expect(runCodingAgent("Merge and continue")).resolves.toEqual({ mergedPullRequest: true });
+    await expect(runCodingAgent("Merge and continue")).resolves.toEqual(
+      expect.objectContaining({
+        mergedPullRequest: true,
+        summary: expect.objectContaining({
+          reviewOutcome: "accepted",
+        }),
+      }),
+    );
   });
 
   it("logs command, exit code, and duration for command executions", async () => {
@@ -179,7 +200,20 @@ describe("runCodingAgent", () => {
 
     const { runCodingAgent } = await import("./runCodingAgent.js");
 
-    await expect(runCodingAgent("Run validation")).resolves.toEqual({ mergedPullRequest: false });
+    await expect(runCodingAgent("Run validation")).resolves.toEqual(
+      expect.objectContaining({
+        mergedPullRequest: false,
+        summary: expect.objectContaining({
+          validationCommands: [
+            expect.objectContaining({
+              command: "pnpm validate",
+              exitCode: 1,
+            }),
+          ],
+          reviewOutcome: "amended",
+        }),
+      }),
+    );
 
     expect(console.log).toHaveBeenCalledWith(
       "[command completed] command=\"pnpm validate\" name=pnpm exit=1 duration=450ms",
@@ -201,6 +235,13 @@ describe("runCodingAgent", () => {
 
     const { runCodingAgent } = await import("./runCodingAgent.js");
 
-    await expect(runCodingAgent("Merge and continue")).resolves.toEqual({ mergedPullRequest: true });
+    await expect(runCodingAgent("Merge and continue")).resolves.toEqual(
+      expect.objectContaining({
+        mergedPullRequest: true,
+        summary: expect.objectContaining({
+          reviewOutcome: "accepted",
+        }),
+      }),
+    );
   });
 });

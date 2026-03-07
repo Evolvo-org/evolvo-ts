@@ -6,10 +6,24 @@ const runIssueCommandMock = vi.fn();
 const getGitHubConfigMock = vi.fn();
 const listOpenIssuesMock = vi.fn();
 const markInProgressMock = vi.fn();
+const addProgressCommentMock = vi.fn();
 const closeIssueMock = vi.fn();
 const replenishSelfImprovementIssuesMock = vi.fn();
 const generateStartupIssueTemplatesMock = vi.fn();
 const runPostMergeSelfRestartMock = vi.fn();
+
+const DEFAULT_RUN_RESULT = {
+  mergedPullRequest: false,
+  summary: {
+    inspectedAreas: [],
+    editedFiles: ["src/main.ts"],
+    validationCommands: [],
+    failedValidationCommands: [],
+    reviewOutcome: "accepted" as const,
+    pullRequestCreated: false,
+    finalResponse: "done",
+  },
+};
 
 vi.mock("./environment.js", () => ({
   GITHUB_OWNER: "owner",
@@ -55,6 +69,7 @@ vi.mock("./issues/taskIssueManager.js", () => ({
   TaskIssueManager: class {
     listOpenIssues = listOpenIssuesMock;
     markInProgress = markInProgressMock;
+    addProgressComment = addProgressCommentMock;
     closeIssue = closeIssueMock;
     replenishSelfImprovementIssues = replenishSelfImprovementIssuesMock;
   },
@@ -66,7 +81,7 @@ describe("main", () => {
   beforeEach(() => {
     vi.resetModules();
     runCodingAgentMock.mockReset();
-    runCodingAgentMock.mockResolvedValue({ mergedPullRequest: false });
+    runCodingAgentMock.mockResolvedValue(DEFAULT_RUN_RESULT);
     runPostMergeSelfRestartMock.mockReset();
     runPostMergeSelfRestartMock.mockResolvedValue(undefined);
     runIssueCommandMock.mockReset();
@@ -82,6 +97,8 @@ describe("main", () => {
     listOpenIssuesMock.mockResolvedValue([]);
     markInProgressMock.mockReset();
     markInProgressMock.mockResolvedValue({ ok: true, message: "ok" });
+    addProgressCommentMock.mockReset();
+    addProgressCommentMock.mockResolvedValue({ ok: true, message: "commented" });
     closeIssueMock.mockReset();
     closeIssueMock.mockResolvedValue({ ok: true, message: "closed" });
     replenishSelfImprovementIssuesMock.mockReset();
@@ -122,6 +139,8 @@ describe("main", () => {
 
     expect(runIssueCommandMock).toHaveBeenCalledWith([]);
     expect(markInProgressMock).toHaveBeenCalledWith(12);
+    expect(addProgressCommentMock).toHaveBeenCalledWith(12, expect.stringContaining("## Task Start"));
+    expect(addProgressCommentMock).toHaveBeenCalledWith(12, expect.stringContaining("## Task Execution Log"));
     expect(runCodingAgentMock).toHaveBeenCalledWith("Issue #12: Fix login redirect\n\nHandle callback URL.");
     expect(replenishSelfImprovementIssuesMock).toHaveBeenCalledWith({ minimumIssueCount: 3, maximumOpenIssues: 5 });
   });
@@ -162,11 +181,16 @@ describe("main", () => {
     listOpenIssuesMock.mockResolvedValueOnce([
       { number: 11, title: "Restart flow", description: "Restart", state: "open", labels: [] },
     ]);
-    runCodingAgentMock.mockResolvedValueOnce({ mergedPullRequest: true });
+    runCodingAgentMock.mockResolvedValueOnce({
+      ...DEFAULT_RUN_RESULT,
+      mergedPullRequest: true,
+      summary: { ...DEFAULT_RUN_RESULT.summary, pullRequestCreated: true },
+    });
     const { main } = await import("./main.js");
 
     await main();
 
+    expect(addProgressCommentMock).toHaveBeenCalledWith(11, expect.stringContaining("## Merge Outcome"));
     expect(runPostMergeSelfRestartMock).toHaveBeenCalledWith("/tmp/evolvo");
   });
 
@@ -174,7 +198,11 @@ describe("main", () => {
     listOpenIssuesMock.mockResolvedValueOnce([
       { number: 21, title: "Restart fail path", description: "Restart", state: "open", labels: [] },
     ]);
-    runCodingAgentMock.mockResolvedValueOnce({ mergedPullRequest: true });
+    runCodingAgentMock.mockResolvedValueOnce({
+      ...DEFAULT_RUN_RESULT,
+      mergedPullRequest: true,
+      summary: { ...DEFAULT_RUN_RESULT.summary, pullRequestCreated: true },
+    });
     runPostMergeSelfRestartMock.mockRejectedValueOnce(new Error("restart failed"));
     const { main } = await import("./main.js");
 
@@ -304,5 +332,34 @@ describe("main", () => {
     );
     expect(console.log).toHaveBeenCalledWith(DEFAULT_PROMPT);
     expect(runCodingAgentMock).not.toHaveBeenCalled();
+  });
+
+  it("adds a lifecycle issue comment when agent execution fails", async () => {
+    listOpenIssuesMock
+      .mockResolvedValueOnce([
+        { number: 55, title: "Failure path", description: "Failing", state: "open", labels: [] },
+      ])
+      .mockResolvedValueOnce([]);
+    runCodingAgentMock.mockRejectedValueOnce(new Error("boom"));
+    const { main } = await import("./main.js");
+
+    await main();
+
+    expect(addProgressCommentMock).toHaveBeenCalledWith(55, expect.stringContaining("## Task Execution Problem"));
+  });
+
+  it("continues execution when lifecycle comment posting fails", async () => {
+    listOpenIssuesMock
+      .mockResolvedValueOnce([
+        { number: 56, title: "Comment failure", description: "Continue anyway", state: "open", labels: [] },
+      ])
+      .mockResolvedValueOnce([]);
+    addProgressCommentMock.mockRejectedValueOnce(new Error("comment post failed"));
+    const { main } = await import("./main.js");
+
+    await main();
+
+    expect(runCodingAgentMock).toHaveBeenCalledWith("Issue #56: Comment failure\n\nContinue anyway");
+    expect(console.error).toHaveBeenCalledWith("Could not add lifecycle comment to issue #56: comment post failed");
   });
 });
