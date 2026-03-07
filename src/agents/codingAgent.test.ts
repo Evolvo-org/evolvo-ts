@@ -20,6 +20,14 @@ describe("buildCodingPrompt", () => {
     expect(prompt).toContain("merge the pull request into main");
   });
 
+  it("requires a continuous issue loop after each completion", () => {
+    const prompt = buildCodingPrompt("Issue #8: Upgrade your issue loop");
+
+    expect(prompt).toContain("After completing an issue:");
+    expect(prompt).toContain("close outdated issues");
+    expect(prompt).toContain("maximum of 5 open issues");
+  });
+
   it("keeps Codex configured for workspace-write execution", () => {
     expect(CODING_AGENT_THREAD_OPTIONS.sandboxMode).toBe("workspace-write");
     expect(CODING_AGENT_THREAD_OPTIONS.approvalPolicy).toBe("never");

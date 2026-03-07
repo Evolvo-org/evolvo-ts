@@ -9,26 +9,36 @@ import { GitHubApiError, GitHubClient } from "./github/githubClient.js";
 import { TaskIssueManager, type IssueSummary } from "./issues/taskIssueManager.js";
 
 export const DEFAULT_PROMPT = "No open issues available. Create an issue first.";
+const MAX_ISSUE_CYCLES = 25;
+const OUTDATED_LABELS = new Set(["outdated", "obsolete", "wontfix", "invalid", "duplicate"]);
 
 function hasLabel(issue: IssueSummary, label: string): boolean {
   return issue.labels.some((currentLabel) => currentLabel.toLowerCase() === label.toLowerCase());
 }
 
 function selectIssueForWork(issues: IssueSummary[]): IssueSummary | null {
-  if (issues.length === 0) {
+  const notCompleted = issues.filter((issue) => !hasLabel(issue, "completed"));
+  if (notCompleted.length === 0) {
     return null;
   }
 
-  const notCompleted = issues.filter((issue) => !hasLabel(issue, "completed"));
-  const candidates = notCompleted.length > 0 ? notCompleted : issues;
+  const candidates = notCompleted;
   const inProgress = candidates.find((issue) => hasLabel(issue, "in progress"));
 
   return inProgress ?? candidates[0] ?? null;
 }
 
+function isOutdatedIssue(issue: IssueSummary): boolean {
+  return issue.labels.some((label) => OUTDATED_LABELS.has(label.toLowerCase()));
+}
+
 function buildPromptFromIssue(issue: IssueSummary): string {
   const description = issue.description.trim() || "No description provided.";
   return `Issue #${issue.number}: ${issue.title}\n\n${description}`;
+}
+
+function formatIssueForLog(issue: IssueSummary): string {
+  return `#${issue.number} ${issue.title}`;
 }
 
 function logGitHubFallback(error: unknown): void {
@@ -55,39 +65,64 @@ export async function main(): Promise<void> {
   }
 
   const { GITHUB_OWNER, GITHUB_REPO } = await import("./environment.js");
-  let selectedIssue: IssueSummary | null = null;
-
-  try {
-    const issueManager = new TaskIssueManager(new GitHubClient(getGitHubConfig()));
-    const openIssues = await issueManager.listOpenIssues();
-    selectedIssue = selectIssueForWork(openIssues);
-
-    if (selectedIssue && !hasLabel(selectedIssue, "in progress")) {
-      const result = await issueManager.markInProgress(selectedIssue.number);
-      if (!result.ok) {
-        console.error(`Could not mark issue #${selectedIssue.number} as in progress: ${result.message}`);
-      }
-    }
-  } catch (error) {
-    logGitHubFallback(error);
-  }
-
-  if (!selectedIssue) {
-    console.log(`Hello from ${GITHUB_OWNER}/${GITHUB_REPO}!`);
-    console.log(`Working directory: ${WORK_DIR}`);
-    console.log(DEFAULT_PROMPT);
-    return;
-  }
-
-  const prompt = buildPromptFromIssue(selectedIssue);
+  const issueManager = new TaskIssueManager(new GitHubClient(getGitHubConfig()));
 
   console.log(`Hello from ${GITHUB_OWNER}/${GITHUB_REPO}!`);
   console.log(`Working directory: ${WORK_DIR}`);
-  console.log(`Prompt: ${prompt}`);
 
-  await runCodingAgent(prompt).catch((error) => {
-    console.error("Error running the coding agent:", error);
-  });
+  for (let cycle = 1; cycle <= MAX_ISSUE_CYCLES; cycle += 1) {
+    try {
+      const openIssues = await issueManager.listOpenIssues();
+      const actionableIssues: IssueSummary[] = [];
+
+      for (const issue of openIssues) {
+        if (!isOutdatedIssue(issue)) {
+          actionableIssues.push(issue);
+          continue;
+        }
+
+        const result = await issueManager.closeIssue(issue.number);
+        if (result.ok) {
+          console.log(`Closed outdated issue ${formatIssueForLog(issue)}.`);
+        } else {
+          console.error(`Could not close outdated issue #${issue.number}: ${result.message}`);
+        }
+      }
+
+      const selectedIssue = selectIssueForWork(actionableIssues);
+
+      if (!selectedIssue) {
+        if (cycle === 1) {
+          console.log(DEFAULT_PROMPT);
+        } else {
+          console.log("No actionable open issues remaining. Issue loop stopped.");
+        }
+        return;
+      }
+
+      if (!hasLabel(selectedIssue, "in progress")) {
+        const result = await issueManager.markInProgress(selectedIssue.number);
+        if (!result.ok) {
+          console.error(`Could not mark issue #${selectedIssue.number} as in progress: ${result.message}`);
+        }
+      }
+
+      const prompt = buildPromptFromIssue(selectedIssue);
+      console.log(`Prompt: ${prompt}`);
+
+      await runCodingAgent(prompt).catch((error) => {
+        console.error("Error running the coding agent:", error);
+      });
+    } catch (error) {
+      logGitHubFallback(error);
+      if (cycle === 1) {
+        console.log(DEFAULT_PROMPT);
+      }
+      return;
+    }
+  }
+
+  console.error(`Reached the maximum number of issue cycles (${MAX_ISSUE_CYCLES}).`);
 }
 
 const isDirectExecution =
