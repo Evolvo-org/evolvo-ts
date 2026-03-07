@@ -1,4 +1,4 @@
-import { execFile, spawn } from "node:child_process";
+import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import { promisify } from "node:util";
@@ -32,6 +32,14 @@ async function runStep(command: string, args: string[], workingDirectory: string
   }
 }
 
+function terminateSpawnedRuntime(child: ChildProcess): void {
+  if (child.killed || child.exitCode !== null || child.signalCode !== null) {
+    return;
+  }
+
+  child.kill("SIGTERM");
+}
+
 async function startUpdatedRuntime(workingDirectory: string): Promise<void> {
   console.log("[restart] Running: pnpm start");
   const readinessToken = randomUUID();
@@ -53,6 +61,7 @@ async function startUpdatedRuntime(workingDirectory: string): Promise<void> {
   await new Promise<void>((resolve, reject) => {
     const timeout = setTimeout(() => {
       cleanup();
+      terminateSpawnedRuntime(child);
       reject(
         new Error(
           `Post-merge restart readiness check failed: timed out after ${STARTUP_READINESS_TIMEOUT_MS}ms waiting for token ${readinessToken} at ${readinessSignalPath}.`,
@@ -90,6 +99,7 @@ async function startUpdatedRuntime(workingDirectory: string): Promise<void> {
       resolve();
     }).catch((error) => {
       cleanup();
+      terminateSpawnedRuntime(child);
       reject(new Error(
         `Post-merge restart readiness check failed: ${
           error instanceof Error ? error.message : "unknown error"

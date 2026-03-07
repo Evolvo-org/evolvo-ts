@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const execFileMock = vi.fn();
 const spawnMock = vi.fn();
+const rmMock = vi.fn();
 const getRuntimeReadinessSignalPathMock = vi.fn();
 const waitForRuntimeReadinessSignalMock = vi.fn();
 
@@ -10,21 +11,47 @@ vi.mock("node:child_process", () => ({
   spawn: spawnMock,
 }));
 
+vi.mock("node:fs", () => ({
+  promises: {
+    rm: rmMock,
+  },
+}));
+
 vi.mock("./runtimeReadiness.js", () => ({
   getRuntimeReadinessSignalPath: getRuntimeReadinessSignalPathMock,
   waitForRuntimeReadinessSignal: waitForRuntimeReadinessSignalMock,
 }));
 
 function createChildProcessStub(overrides: {
+  exitCode?: number | null;
+  signalCode?: NodeJS.Signals | null;
+  killed?: boolean;
+  kill?: (signal?: NodeJS.Signals | number) => boolean;
   pid?: number;
   once?: (event: string, handler: (...args: unknown[]) => void) => void;
   removeListener?: (event: string, handler: (...args: unknown[]) => void) => void;
 } = {}) {
   return {
+    exitCode: overrides.exitCode ?? null,
+    signalCode: overrides.signalCode ?? null,
+    killed: overrides.killed ?? false,
+    kill: overrides.kill ?? vi.fn(() => true),
     pid: overrides.pid ?? 999,
     once: overrides.once ?? vi.fn(),
     removeListener: overrides.removeListener ?? vi.fn(),
   };
+}
+
+async function waitForSpawn(iterations = 20): Promise<void> {
+  for (let iteration = 0; iteration < iterations; iteration += 1) {
+    if (spawnMock.mock.calls.length > 0) {
+      return;
+    }
+
+    await Promise.resolve();
+  }
+
+  throw new Error("Timed out waiting for pnpm start to be spawned.");
 }
 
 describe("runPostMergeSelfRestart", () => {
@@ -33,6 +60,8 @@ describe("runPostMergeSelfRestart", () => {
     vi.useFakeTimers();
     execFileMock.mockReset();
     spawnMock.mockReset();
+    rmMock.mockReset();
+    rmMock.mockResolvedValue(undefined);
     getRuntimeReadinessSignalPathMock.mockReset();
     getRuntimeReadinessSignalPathMock.mockReturnValue("/tmp/evolvo/.evolvo/runtime-readiness.json");
     waitForRuntimeReadinessSignalMock.mockReset();
@@ -132,7 +161,8 @@ describe("runPostMergeSelfRestart", () => {
     execFileMock.mockImplementation((_command: string, _args: string[], _options: unknown, callback: (error: unknown, stdout: string, stderr: string) => void) => {
       callback(null, "", "");
     });
-    const child = createChildProcessStub();
+    const kill = vi.fn(() => true);
+    const child = createChildProcessStub({ kill });
     spawnMock.mockReturnValue(child);
     waitForRuntimeReadinessSignalMock.mockRejectedValueOnce(new Error("Timed out waiting for readiness token"));
 
@@ -140,5 +170,28 @@ describe("runPostMergeSelfRestart", () => {
     await expect(runPostMergeSelfRestart("/tmp/evolvo")).rejects.toThrow(
       "Post-merge restart readiness check failed: Timed out waiting for readiness token",
     );
+    expect(kill).toHaveBeenCalledWith("SIGTERM");
+  });
+
+  it("terminates the restarted child when readiness times out", async () => {
+    execFileMock.mockImplementation((_command: string, _args: string[], _options: unknown, callback: (error: unknown, stdout: string, stderr: string) => void) => {
+      callback(null, "", "");
+    });
+    const kill = vi.fn(() => true);
+    const child = createChildProcessStub({ kill });
+    spawnMock.mockReturnValue(child);
+    waitForRuntimeReadinessSignalMock.mockImplementation(() => new Promise(() => {}));
+
+    const { runPostMergeSelfRestart } = await import("./selfRestart.js");
+    const restartPromise = runPostMergeSelfRestart("/tmp/evolvo");
+    const rejectionExpectation = expect(restartPromise).rejects.toThrow(
+      "Post-merge restart readiness check failed: timed out after 15000ms",
+    );
+
+    await waitForSpawn();
+    await vi.advanceTimersByTimeAsync(15000);
+
+    await rejectionExpectation;
+    expect(kill).toHaveBeenCalledWith("SIGTERM");
   });
 });
