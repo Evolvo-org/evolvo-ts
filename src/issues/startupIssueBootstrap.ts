@@ -1,5 +1,7 @@
 import { promises as fs } from "node:fs";
+import { execFile } from "node:child_process";
 import { join, relative } from "node:path";
+import { promisify } from "node:util";
 
 export type IssueTemplate = {
   title: string;
@@ -9,24 +11,8 @@ export type IssueTemplate = {
 type PackageJsonShape = {
   scripts?: Record<string, string>;
 };
-
-const FALLBACK_TEMPLATES: IssueTemplate[] = [
-  {
-    title: "Harden startup diagnostics when bootstrap issue creation fails",
-    description:
-      "Add clearer startup diagnostics around issue bootstrapping so empty-queue failures are easy to debug and recover from.",
-  },
-  {
-    title: "Add startup bootstrap integration test for empty-repo issue queue",
-    description:
-      "Add an integration-style test that verifies startup creates initial issues and proceeds into normal issue selection.",
-  },
-  {
-    title: "Emit per-cycle summary logs for issue queue health",
-    description:
-      "Add concise per-cycle queue health logs covering open count, selected issue, and bootstrap/replenishment outcomes.",
-  },
-];
+const IGNORED_SCAN_DIRECTORIES = new Set([".git", "node_modules", "dist", "build", "coverage", ".turbo"]);
+const execFileAsync = promisify(execFile);
 
 async function pathExists(path: string): Promise<boolean> {
   try {
@@ -58,16 +44,33 @@ async function listTypeScriptFiles(root: string): Promise<string[]> {
   for (const entry of entries) {
     const absolutePath = join(root, entry.name);
     if (entry.isDirectory()) {
+      if (IGNORED_SCAN_DIRECTORIES.has(entry.name)) {
+        continue;
+      }
       files.push(...(await listTypeScriptFiles(absolutePath)));
       continue;
     }
 
-    if (entry.isFile() && entry.name.endsWith(".ts")) {
+    if (entry.isFile() && (entry.name.endsWith(".ts") || entry.name.endsWith(".tsx"))) {
       files.push(absolutePath);
     }
   }
 
   return files;
+}
+
+async function listTrackedTypeScriptFiles(repoRoot: string): Promise<string[] | null> {
+  try {
+    const { stdout } = await execFileAsync("git", ["-C", repoRoot, "ls-files", "*.ts", "*.tsx"]);
+    const files = stdout
+      .split("\n")
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .map((relativePath) => join(repoRoot, relativePath));
+    return files;
+  } catch {
+    return null;
+  }
 }
 
 function uniqueByTitle(templates: IssueTemplate[]): IssueTemplate[] {
@@ -89,7 +92,7 @@ function uniqueByTitle(templates: IssueTemplate[]): IssueTemplate[] {
 
 export async function generateStartupIssueTemplates(
   repoRoot: string,
-  options: { targetCount: number; fallbackTemplates?: IssueTemplate[] } = { targetCount: 3 },
+  options: { targetCount: number } = { targetCount: 3 },
 ): Promise<IssueTemplate[]> {
   const targetCount = Math.max(0, Math.floor(options.targetCount));
   if (targetCount === 0) {
@@ -98,7 +101,6 @@ export async function generateStartupIssueTemplates(
 
   const packageJson = await readPackageJson(repoRoot);
   const scripts = packageJson.scripts ?? {};
-  const srcRoot = join(repoRoot, "src");
   const templates: IssueTemplate[] = [];
 
   if (!scripts.typecheck) {
@@ -117,33 +119,40 @@ export async function generateStartupIssueTemplates(
     });
   }
 
-  if (await pathExists(srcRoot)) {
-    try {
-      const sourceFiles = await listTypeScriptFiles(srcRoot);
-      const sourceFileSet = new Set(sourceFiles);
-      const missingTests = sourceFiles
-        .filter((filePath) => !filePath.endsWith(".test.ts"))
-        .filter((filePath) => !sourceFileSet.has(filePath.replace(/\.ts$/u, ".test.ts")))
-        .map((filePath) => relative(repoRoot, filePath))
-        .sort();
+  const trackedTypeScriptFiles = await listTrackedTypeScriptFiles(repoRoot);
+  const allTypeScriptFiles = trackedTypeScriptFiles ?? (await listTypeScriptFiles(repoRoot));
+  const sourceFiles = allTypeScriptFiles
+    .filter((filePath) => !filePath.endsWith(".d.ts"))
+    .filter((filePath) => !/(\.test|\.spec)\.tsx?$/u.test(filePath))
+    .sort();
+  const sourceFileByBase = new Map(sourceFiles.map((filePath) => [filePath.replace(/\.tsx?$/u, ""), filePath] as const));
+  const testFiles = new Set(
+    allTypeScriptFiles
+      .filter((filePath) => /(\.test|\.spec)\.tsx?$/u.test(filePath))
+      .map((filePath) => filePath.replace(/(\.test|\.spec)\.tsx?$/u, "")),
+  );
 
-      const firstMissingTest = missingTests[0];
-      if (firstMissingTest) {
-        templates.push({
-          title: `Add regression tests for ${firstMissingTest}`,
-          description: `Add focused tests for \`${firstMissingTest}\` and cover key success/failure paths to improve reliability of future self-edits.`,
-        });
-      }
-    } catch {
-      // Ignore repository scan failures and continue with fallback templates.
+  const missingTests = [...sourceFileByBase.entries()]
+    .filter(([fileBasePath]) => !testFiles.has(fileBasePath))
+    .map(([, sourceFilePath]) => sourceFilePath)
+    .map((filePath) => relative(repoRoot, filePath));
+
+  for (const missingTestFilePath of missingTests) {
+    if (templates.length >= targetCount) {
+      break;
     }
+
+    templates.push({
+      title: `Add regression tests for ${missingTestFilePath}`,
+      description: `Add focused tests for \`${missingTestFilePath}\` and cover key success/failure paths to improve reliability of future self-edits.`,
+    });
   }
 
   const readmePath = join(repoRoot, "README.md");
   if (await pathExists(readmePath)) {
     try {
       const readme = await fs.readFile(readmePath, "utf8");
-      if (readme.trim().length < 120) {
+      if (readme.trim().length < 200 && templates.length < targetCount) {
         templates.push({
           title: "Improve README with runtime and issue-loop operating guide",
           description:
@@ -151,14 +160,9 @@ export async function generateStartupIssueTemplates(
         });
       }
     } catch {
-      // Ignore README read failures and continue with fallback templates.
+      // Ignore README read failures and continue with bounded repository-derived candidates.
     }
   }
 
-  const fallbackTemplates =
-    options.fallbackTemplates && options.fallbackTemplates.length > 0
-      ? options.fallbackTemplates
-      : FALLBACK_TEMPLATES;
-  const combined = uniqueByTitle([...templates, ...fallbackTemplates]);
-  return combined.slice(0, targetCount);
+  return uniqueByTitle(templates).slice(0, targetCount);
 }

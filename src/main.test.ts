@@ -610,48 +610,36 @@ describe("main", () => {
     expect(console.log).toHaveBeenCalledWith(DEFAULT_PROMPT);
   });
 
-  it("falls back to default startup issue replenishment when repository analysis throws", async () => {
+  it("logs diagnostics and stops when startup repository analysis throws", async () => {
     generateStartupIssueTemplatesMock.mockRejectedValueOnce(new Error("analysis boom"));
-    listOpenIssuesMock
-      .mockResolvedValueOnce([])
-      .mockResolvedValueOnce([
-        { number: 30, title: "Fallback issue", description: "fallback", state: "open", labels: [] },
-      ])
-      .mockResolvedValueOnce([]);
-    replenishSelfImprovementIssuesMock.mockResolvedValueOnce({
-      created: [{ number: 30, title: "Fallback issue", description: "fallback", state: "open", labels: [] }],
-    });
-    const { main } = await import("./main.js");
-
-    await main();
-
-    expect(console.error).toHaveBeenCalledWith("Startup repository analysis failed: analysis boom");
-    expect(console.error).toHaveBeenCalledWith(
-      "Startup issue bootstrap is falling back to default issue templates (targetCount=3).",
-    );
-    expect(replenishSelfImprovementIssuesMock).toHaveBeenCalledWith({ minimumIssueCount: 3, maximumOpenIssues: 5 });
-    expect(runCodingAgentMock).toHaveBeenCalledWith("Issue #30: Fallback issue\n\nfallback");
-  });
-
-  it("logs actionable startup diagnostics when fallback issue creation also fails", async () => {
-    generateStartupIssueTemplatesMock.mockRejectedValueOnce(new Error("analysis boom"));
-    replenishSelfImprovementIssuesMock.mockRejectedValueOnce(new Error("issue create denied"));
     const { DEFAULT_PROMPT, main } = await import("./main.js");
 
     await main();
 
     expect(console.error).toHaveBeenCalledWith("Startup repository analysis failed: analysis boom");
+    expect(console.error).toHaveBeenCalledWith("Startup repository-derived bootstrap created 0 issues. Issue queue remains empty.");
     expect(console.error).toHaveBeenCalledWith(
-      "Startup issue bootstrap is falling back to default issue templates (targetCount=3).",
+      "Startup bootstrap diagnostics: context=repository-derived bootstrap targetCount=3 templateCount=0 createdCount=0.",
     );
-    expect(console.error).toHaveBeenCalledWith("Startup fallback issue creation failed: issue create denied");
-    expect(console.error).toHaveBeenCalledWith("Startup fallback bootstrap created 0 issues. Issue queue remains empty.");
+    expect(console.error).toHaveBeenCalledWith("Startup bootstrap primary error: Error: analysis boom.");
+    expect(replenishSelfImprovementIssuesMock).not.toHaveBeenCalled();
+    expect(runCodingAgentMock).not.toHaveBeenCalled();
+    expect(console.log).toHaveBeenCalledWith(DEFAULT_PROMPT);
+  });
+
+  it("logs actionable startup diagnostics when repository analysis fails at startup", async () => {
+    generateStartupIssueTemplatesMock.mockRejectedValueOnce(new Error("analysis boom"));
+    const { DEFAULT_PROMPT, main } = await import("./main.js");
+
+    await main();
+
+    expect(console.error).toHaveBeenCalledWith("Startup repository analysis failed: analysis boom");
+    expect(console.error).toHaveBeenCalledWith("Startup repository-derived bootstrap created 0 issues. Issue queue remains empty.");
     expect(console.error).toHaveBeenCalledWith(
-      "Startup bootstrap diagnostics: context=fallback bootstrap targetCount=3 templateCount=default createdCount=0.",
+      "Startup bootstrap diagnostics: context=repository-derived bootstrap targetCount=3 templateCount=0 createdCount=0.",
     );
     expect(console.error).toHaveBeenCalledWith("Startup bootstrap environment: workDir=/tmp/evolvo.");
     expect(console.error).toHaveBeenCalledWith("Startup bootstrap primary error: Error: analysis boom.");
-    expect(console.error).toHaveBeenCalledWith("Startup bootstrap fallback error: Error: issue create denied.");
     expect(console.error).toHaveBeenCalledWith(
       "Startup bootstrap next actions: run `pnpm dev -- issues list`; if queue is still empty, run `pnpm dev -- issues create \"<title>\" \"<description>\"`.",
     );
@@ -665,23 +653,18 @@ describe("main", () => {
     expect(runCodingAgentMock).not.toHaveBeenCalled();
   });
 
-  it("logs actionable startup diagnostics when fallback issue creation returns no issues", async () => {
-    generateStartupIssueTemplatesMock.mockRejectedValueOnce(new Error("analysis boom"));
-    replenishSelfImprovementIssuesMock.mockResolvedValueOnce({ created: [] });
+  it("logs actionable startup diagnostics when startup analysis yields no candidates", async () => {
+    generateStartupIssueTemplatesMock.mockResolvedValueOnce([]);
     const { DEFAULT_PROMPT, main } = await import("./main.js");
 
     await main();
 
-    expect(console.error).toHaveBeenCalledWith("Startup repository analysis failed: analysis boom");
+    expect(console.error).toHaveBeenCalledWith("Startup repository analysis produced 0 issue candidates.");
+    expect(console.error).toHaveBeenCalledWith("Startup repository-derived bootstrap created 0 issues. Issue queue remains empty.");
     expect(console.error).toHaveBeenCalledWith(
-      "Startup issue bootstrap is falling back to default issue templates (targetCount=3).",
-    );
-    expect(console.error).toHaveBeenCalledWith("Startup fallback bootstrap created 0 issues. Issue queue remains empty.");
-    expect(console.error).toHaveBeenCalledWith(
-      "Startup bootstrap diagnostics: context=fallback bootstrap targetCount=3 templateCount=default createdCount=0.",
+      "Startup bootstrap diagnostics: context=repository-derived bootstrap targetCount=3 templateCount=0 createdCount=0.",
     );
     expect(console.error).toHaveBeenCalledWith("Startup bootstrap environment: workDir=/tmp/evolvo.");
-    expect(console.error).toHaveBeenCalledWith("Startup bootstrap primary error: Error: analysis boom.");
     expect(console.error).toHaveBeenCalledWith(
       "Startup bootstrap next actions: run `pnpm dev -- issues list`; if queue is still empty, run `pnpm dev -- issues create \"<title>\" \"<description>\"`.",
     );
@@ -721,7 +704,11 @@ describe("main", () => {
 
     expect(runCodingAgentMock).not.toHaveBeenCalled();
     expect(markInProgressMock).not.toHaveBeenCalled();
-    expect(replenishSelfImprovementIssuesMock).toHaveBeenCalledWith({ minimumIssueCount: 3, maximumOpenIssues: 5 });
+    expect(replenishSelfImprovementIssuesMock).toHaveBeenCalledWith({
+      minimumIssueCount: 3,
+      maximumOpenIssues: 5,
+      templates: [],
+    });
     expect(console.log).toHaveBeenCalledWith(
       "Cycle 1 queue health: open=1 selected=none queueAction=replenish created=0 outcome=stop",
     );
@@ -745,7 +732,11 @@ describe("main", () => {
     await main();
 
     expect(generateStartupIssueTemplatesMock).toHaveBeenCalledWith("/tmp/evolvo", { targetCount: 3 });
-    expect(replenishSelfImprovementIssuesMock).toHaveBeenCalledWith({ minimumIssueCount: 3, maximumOpenIssues: 5 });
+    expect(replenishSelfImprovementIssuesMock).toHaveBeenCalledWith({
+      minimumIssueCount: 3,
+      maximumOpenIssues: 5,
+      templates: [],
+    });
     expect(console.log).toHaveBeenCalledWith(
       "Cycle 1 queue health: open=1 selected=none queueAction=replenish created=1 outcome=continue",
     );
@@ -799,7 +790,11 @@ describe("main", () => {
 
     await main();
 
-    expect(replenishSelfImprovementIssuesMock).toHaveBeenCalledWith({ minimumIssueCount: 3, maximumOpenIssues: 5 });
+    expect(replenishSelfImprovementIssuesMock).toHaveBeenCalledWith({
+      minimumIssueCount: 3,
+      maximumOpenIssues: 5,
+      templates: [],
+    });
     expect(console.log).toHaveBeenCalledWith(
       "Cycle 2 queue health: open=0 selected=none queueAction=replenish created=1 outcome=continue",
     );
@@ -866,6 +861,7 @@ describe("main", () => {
     expect(replenishSelfImprovementIssuesMock).toHaveBeenNthCalledWith(1, {
       minimumIssueCount: 3,
       maximumOpenIssues: 5,
+      templates: [],
     });
     expect(markInProgressMock).toHaveBeenNthCalledWith(1, 41);
     expect(markInProgressMock).toHaveBeenNthCalledWith(2, 42);
@@ -950,6 +946,11 @@ describe("main", () => {
 
   it("retries transient GitHub bootstrap failures in the run loop and recovers", async () => {
     process.argv = ["node", "test-runner.ts"];
+    generateStartupIssueTemplatesMock.mockResolvedValue([
+      { title: "Bootstrap A", description: "A" },
+      { title: "Bootstrap B", description: "B" },
+      { title: "Bootstrap C", description: "C" },
+    ]);
     listOpenIssuesMock
       .mockResolvedValueOnce([])
       .mockResolvedValueOnce([
@@ -996,6 +997,11 @@ describe("main", () => {
 
   it("stops after bounded retries when transient GitHub bootstrap failures persist", async () => {
     process.argv = ["node", "test-runner.ts"];
+    generateStartupIssueTemplatesMock.mockResolvedValue([
+      { title: "Bootstrap A", description: "A" },
+      { title: "Bootstrap B", description: "B" },
+      { title: "Bootstrap C", description: "C" },
+    ]);
     listOpenIssuesMock.mockResolvedValue([]);
     replenishSelfImprovementIssuesMock.mockRejectedValue(
       new GitHubApiError("GitHub API request failed (503): Service Unavailable", 503, null),
@@ -1119,11 +1125,11 @@ describe("main", () => {
 
     await main();
 
-    expect(requestCycleLimitDecisionFromOperatorMock).toHaveBeenCalledWith(100);
+    expect(requestCycleLimitDecisionFromOperatorMock).toHaveBeenCalledWith(5);
     expect(console.log).toHaveBeenCalledWith(
-      "Operator decision via Discord: continue (+2 cycles). New limit=102.",
+      "Operator decision via Discord: continue (+2 cycles). New limit=7.",
     );
-    expect(runCodingAgentMock).toHaveBeenCalledTimes(100);
+    expect(runCodingAgentMock).toHaveBeenCalledTimes(6);
   });
 
   it("quits cleanly at cycle limit when Discord operator chooses quit", async () => {
@@ -1139,9 +1145,9 @@ describe("main", () => {
 
     await main();
 
-    expect(requestCycleLimitDecisionFromOperatorMock).toHaveBeenCalledWith(100);
+    expect(requestCycleLimitDecisionFromOperatorMock).toHaveBeenCalledWith(5);
     expect(console.error).toHaveBeenCalledWith("Operator decision via Discord: quit.");
-    expect(console.error).toHaveBeenCalledWith("Reached the maximum number of issue cycles (100).");
+    expect(console.error).toHaveBeenCalledWith("Reached the maximum number of issue cycles (5).");
   });
 
   it("adds a lifecycle issue comment when agent execution fails", async () => {

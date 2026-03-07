@@ -83,13 +83,12 @@ function formatBootstrapError(error: unknown): string {
 }
 
 function logStartupBootstrapRecoveryGuidance(options: {
-  context: "repository-derived bootstrap" | "fallback bootstrap";
+  context: "repository-derived bootstrap";
   targetCount: number;
-  templateCount: number | "default";
+  templateCount: number;
   createdCount: number;
   workDir: string;
   repositoryAnalysisError?: unknown;
-  fallbackCreationError?: unknown;
 }): void {
   console.error(`Startup ${options.context} created 0 issues. Issue queue remains empty.`);
   console.error(
@@ -100,9 +99,6 @@ function logStartupBootstrapRecoveryGuidance(options: {
   );
   if (options.repositoryAnalysisError) {
     console.error(`Startup bootstrap primary error: ${formatBootstrapError(options.repositoryAnalysisError)}.`);
-  }
-  if (options.fallbackCreationError) {
-    console.error(`Startup bootstrap fallback error: ${formatBootstrapError(options.fallbackCreationError)}.`);
   }
   console.error(
     "Startup bootstrap next actions: run `pnpm dev -- issues list`; if queue is still empty, run `pnpm dev -- issues create \"<title>\" \"<description>\"`.",
@@ -116,6 +112,18 @@ export async function bootstrapStartupIssues(issueManager: TaskIssueManager, wor
   const targetCount = MIN_REPLENISH_ISSUES;
   try {
     const templates = await generateStartupIssueTemplates(workDir, { targetCount });
+    if (templates.length === 0) {
+      console.error("Startup repository analysis produced 0 issue candidates.");
+      logStartupBootstrapRecoveryGuidance({
+        context: "repository-derived bootstrap",
+        targetCount,
+        templateCount: 0,
+        createdCount: 0,
+        workDir,
+      });
+      return [];
+    }
+
     const replenishment = await issueManager.replenishSelfImprovementIssues({
       minimumIssueCount: targetCount,
       maximumOpenIssues: MAX_OPEN_ISSUES,
@@ -147,48 +155,15 @@ export async function bootstrapStartupIssues(issueManager: TaskIssueManager, wor
       console.error("Startup repository analysis failed with an unknown error.");
     }
 
-    console.error(`Startup issue bootstrap is falling back to default issue templates (targetCount=${targetCount}).`);
-
-    try {
-      const replenishment = await issueManager.replenishSelfImprovementIssues({
-        minimumIssueCount: targetCount,
-        maximumOpenIssues: MAX_OPEN_ISSUES,
-      });
-
-      if (replenishment.created.length === 0) {
-        logStartupBootstrapRecoveryGuidance({
-          context: "fallback bootstrap",
-          targetCount,
-          templateCount: "default",
-          createdCount: replenishment.created.length,
-          workDir,
-          repositoryAnalysisError: error,
-        });
-      }
-
-      return replenishment.created;
-    } catch (fallbackError) {
-      if (isTransientGitHubError(fallbackError)) {
-        throw fallbackError;
-      }
-
-      if (fallbackError instanceof Error) {
-        console.error(`Startup fallback issue creation failed: ${fallbackError.message}`);
-      } else {
-        console.error("Startup fallback issue creation failed with an unknown error.");
-      }
-
-      logStartupBootstrapRecoveryGuidance({
-        context: "fallback bootstrap",
-        targetCount,
-        templateCount: "default",
-        createdCount: 0,
-        workDir,
-        repositoryAnalysisError: error,
-        fallbackCreationError: fallbackError,
-      });
-      return [];
-    }
+    logStartupBootstrapRecoveryGuidance({
+      context: "repository-derived bootstrap",
+      targetCount,
+      templateCount: 0,
+      createdCount: 0,
+      workDir,
+      repositoryAnalysisError: error,
+    });
+    return [];
   }
 }
 

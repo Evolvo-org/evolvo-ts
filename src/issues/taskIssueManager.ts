@@ -66,34 +66,6 @@ type IssueEvidenceSource = {
   body: string | null;
 };
 
-const SELF_IMPROVEMENT_ISSUE_TEMPLATES: IssueTemplate[] = [
-  {
-    title: "Harden run loop retry handling for transient GitHub failures",
-    description:
-      "Add bounded retry/backoff around transient GitHub API errors in the run loop and cover the failure/recovery paths with tests.",
-  },
-  {
-    title: "Add regression test for empty-queue issue replenishment flow",
-    description:
-      "Add an integration-style runtime test that validates queue replenishment creates new issues and continues processing without exiting.",
-  },
-  {
-    title: "Improve validation reporting with command, exit code, and duration",
-    description:
-      "Enhance validation logs to include command name, exit status, and elapsed time to improve debugging after failed runs.",
-  },
-  {
-    title: "Guard commit staging to reject unrelated modified files",
-    description:
-      "Add a pre-commit safeguard that verifies staged files match the active task scope and blocks accidental unrelated changes.",
-  },
-  {
-    title: "Add structured lifecycle logging for issue cycle transitions",
-    description:
-      "Emit structured logs for issue selection, implementation start/end, review outcome, and merge transition to improve observability.",
-  },
-];
-
 function buildFollowUpTemplate(template: IssueTemplate, sequence: number): IssueTemplate {
   return {
     title: `${template.title} (follow-up ${sequence})`,
@@ -352,12 +324,9 @@ export class TaskIssueManager {
   public async replenishSelfImprovementIssues(options: ReplenishIssuesOptions): Promise<ReplenishIssuesResult> {
     const minimumIssueCount = Math.max(0, Math.floor(options.minimumIssueCount));
     const maximumOpenIssues = Math.max(0, Math.floor(options.maximumOpenIssues));
-    const baseTemplates =
-      options.templates && options.templates.length > 0
-        ? options.templates
-        : SELF_IMPROVEMENT_ISSUE_TEMPLATES;
+    const baseTemplates = options.templates ?? [];
 
-    if (minimumIssueCount === 0 || maximumOpenIssues === 0) {
+    if (minimumIssueCount === 0 || maximumOpenIssues === 0 || baseTemplates.length === 0) {
       return { created: [] };
     }
 
