@@ -30,6 +30,15 @@ describe("buildCodingPrompt", () => {
     expect(prompt).toContain("maximum of 5 open issues");
   });
 
+  it("includes explicit external repository mode rules", () => {
+    const prompt = buildCodingPrompt("Issue #40: Work on an external repository");
+
+    expect(prompt).toContain("When a task explicitly requires external repository work");
+    expect(prompt).toContain("keep strict separation between Evolvo's repository and the target repository");
+    expect(prompt).toContain("record the external repository URL and external PR URL");
+    expect(prompt).toContain("explicitly confirm whether the external PR was merged");
+  });
+
   it("keeps Codex configured for workspace-write execution", () => {
     expect(CODING_AGENT_THREAD_OPTIONS.sandboxMode).toBe("workspace-write");
     expect(CODING_AGENT_THREAD_OPTIONS.approvalPolicy).toBe("never");

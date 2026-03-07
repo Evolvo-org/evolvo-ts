@@ -21,6 +21,9 @@ const DEFAULT_RUN_RESULT = {
     failedValidationCommands: [],
     reviewOutcome: "accepted" as const,
     pullRequestCreated: false,
+    externalRepositories: [],
+    externalPullRequests: [],
+    mergedExternalPullRequest: false,
     finalResponse: "done",
   },
 };
@@ -346,6 +349,39 @@ describe("main", () => {
     await main();
 
     expect(addProgressCommentMock).toHaveBeenCalledWith(55, expect.stringContaining("## Task Execution Problem"));
+  });
+
+  it("logs external repository evidence in the task execution comment", async () => {
+    listOpenIssuesMock
+      .mockResolvedValueOnce([
+        { number: 57, title: "External work", description: "external", state: "open", labels: [] },
+      ])
+      .mockResolvedValueOnce([]);
+    runCodingAgentMock.mockResolvedValueOnce({
+      ...DEFAULT_RUN_RESULT,
+      summary: {
+        ...DEFAULT_RUN_RESULT.summary,
+        externalRepositories: ["https://github.com/other-org/other-repo"],
+        externalPullRequests: ["https://github.com/other-org/other-repo/pull/12"],
+        mergedExternalPullRequest: true,
+      },
+    });
+    const { main } = await import("./main.js");
+
+    await main();
+
+    expect(addProgressCommentMock).toHaveBeenCalledWith(
+      57,
+      expect.stringContaining("### External Repository Evidence"),
+    );
+    expect(addProgressCommentMock).toHaveBeenCalledWith(
+      57,
+      expect.stringContaining("https://github.com/other-org/other-repo/pull/12"),
+    );
+    expect(addProgressCommentMock).toHaveBeenCalledWith(
+      57,
+      expect.stringContaining("External pull request merged: yes"),
+    );
   });
 
   it("continues execution when lifecycle comment posting fails", async () => {

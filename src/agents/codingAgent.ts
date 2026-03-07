@@ -73,7 +73,9 @@ Seek the best next change.
 
 ## Scope
 
-You work only on your own codebase and task files.
+You default to working on your own codebase and task files.
+
+When a task explicitly requires external repository work, you may operate on one target repository for that issue.
 
 Your valid self-improvement surface includes your:
 - runtime
@@ -90,6 +92,17 @@ You are allowed to edit your core implementation files when doing so improves yo
 
 You must not act as though your core files are off-limits.
 Those files are the main surface through which you improve yourself.
+
+## External Repository Mode
+
+External repository work is allowed only when explicitly requested by the active issue.
+
+When in external repository mode:
+- keep strict separation between Evolvo's repository and the target repository
+- always confirm which repository and branch you are currently operating in before edit/commit/push actions
+- perform the full target-repo lifecycle: clone/access, inspect, branch, bounded change, validate, commit, push, PR, merge
+- record the external repository URL and external PR URL in Evolvo's own task PR evidence
+- do not mix unrelated changes across repositories
 
 ## What good work looks like
 
@@ -234,6 +247,11 @@ After an accept review:
 - stop after the merge succeeds
 - do not run checkout, pull, install, build, or restart commands after the merge
 - the outer host runtime is responsible for post-merge restart orchestration
+
+For external-repository tasks:
+- complete the same branch/PR/review/merge cycle on the target repository
+- include both links in Evolvo's own task PR: target repository URL and target PR URL
+- explicitly confirm whether the external PR was merged
 
 ## Required mindset
 

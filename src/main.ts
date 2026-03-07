@@ -104,6 +104,13 @@ function buildIssueExecutionComment(issue: IssueSummary, result: CodingAgentRunR
     `- PR created: ${result.summary.pullRequestCreated ? "yes" : "no"}.`,
     `- PR merged into main: ${result.mergedPullRequest ? "yes" : "no"}.`,
   ];
+  const externalRepositoryLines = result.summary.externalRepositories.length > 0
+    ? result.summary.externalRepositories.map((url) => `- ${url}`)
+    : ["- No external repository link captured."];
+  const externalPullRequestLines = result.summary.externalPullRequests.length > 0
+    ? result.summary.externalPullRequests.map((url) => `- ${url}`)
+    : ["- No external pull request link captured."];
+  const externalMergeLine = `- External pull request merged: ${result.summary.mergedExternalPullRequest ? "yes" : "no"}.`;
 
   return [
     "## Task Execution Log",
@@ -123,6 +130,13 @@ function buildIssueExecutionComment(issue: IssueSummary, result: CodingAgentRunR
     "",
     "### Pull Request",
     ...prLines,
+    "",
+    "### External Repository Evidence",
+    "#### External Repository",
+    ...externalRepositoryLines,
+    "#### External Pull Request",
+    ...externalPullRequestLines,
+    externalMergeLine,
     "",
     "### Completion Summary",
     `- Issue #${issue.number} execution cycle finished with outcome: ${result.summary.reviewOutcome}.`,
