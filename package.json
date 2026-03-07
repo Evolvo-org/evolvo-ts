@@ -1,0 +1,25 @@
+{
+  "name": "evolvo-ts",
+  "version": "1.0.0",
+  "private": true,
+  "type": "commonjs",
+  "main": "dist/main.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "tsx src/main.ts",
+    "start": "node dist/main.js",
+    "lint": "eslint . --ext .ts",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@types/node": "^24.5.2",
+    "tsx": "^4.21.0",
+    "typescript": "^5.9.3"
+  },
+  "dependencies": {
+    "@openai/agents": "^0.5.4",
+    "dotenv": "^17.2.2",
+    "openai": "^6.27.0",
+    "vitest": "^4.0.18"
+  }
+}
