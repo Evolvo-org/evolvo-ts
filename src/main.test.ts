@@ -6,6 +6,7 @@ const runIssueCommandMock = vi.fn();
 const getGitHubConfigMock = vi.fn();
 const listOpenIssuesMock = vi.fn();
 const markInProgressMock = vi.fn();
+const closeIssueMock = vi.fn();
 
 vi.mock("./environment.js", () => ({
   GITHUB_OWNER: "owner",
@@ -43,6 +44,7 @@ vi.mock("./issues/taskIssueManager.js", () => ({
   TaskIssueManager: class {
     listOpenIssues = listOpenIssuesMock;
     markInProgress = markInProgressMock;
+    closeIssue = closeIssueMock;
   },
 }));
 
@@ -66,6 +68,8 @@ describe("main", () => {
     listOpenIssuesMock.mockResolvedValue([]);
     markInProgressMock.mockReset();
     markInProgressMock.mockResolvedValue({ ok: true, message: "ok" });
+    closeIssueMock.mockReset();
+    closeIssueMock.mockResolvedValue({ ok: true, message: "closed" });
     process.argv = ["node", "src/main.ts"];
     vi.spyOn(console, "log").mockImplementation(() => {});
     vi.spyOn(console, "error").mockImplementation(() => {});
@@ -89,9 +93,11 @@ describe("main", () => {
   });
 
   it("selects an open issue and uses it as the prompt", async () => {
-    listOpenIssuesMock.mockResolvedValue([
-      { number: 12, title: "Fix login redirect", description: "Handle callback URL.", state: "open", labels: [] },
-    ]);
+    listOpenIssuesMock
+      .mockResolvedValueOnce([
+        { number: 12, title: "Fix login redirect", description: "Handle callback URL.", state: "open", labels: [] },
+      ])
+      .mockResolvedValueOnce([]);
     const { main } = await import("./main.js");
 
     await main();
@@ -102,10 +108,12 @@ describe("main", () => {
   });
 
   it("prefers an issue already in progress", async () => {
-    listOpenIssuesMock.mockResolvedValue([
-      { number: 5, title: "A", description: "A", state: "open", labels: [] },
-      { number: 9, title: "B", description: "B", state: "open", labels: ["in progress"] },
-    ]);
+    listOpenIssuesMock
+      .mockResolvedValueOnce([
+        { number: 5, title: "A", description: "A", state: "open", labels: [] },
+        { number: 9, title: "B", description: "B", state: "open", labels: ["in progress"] },
+      ])
+      .mockResolvedValueOnce([]);
     const { main } = await import("./main.js");
 
     await main();
@@ -114,12 +122,58 @@ describe("main", () => {
     expect(runCodingAgentMock).toHaveBeenCalledWith("Issue #9: B\n\nB");
   });
 
+  it("continues to the next issue after a run completes", async () => {
+    listOpenIssuesMock
+      .mockResolvedValueOnce([
+        { number: 7, title: "First", description: "first", state: "open", labels: [] },
+      ])
+      .mockResolvedValueOnce([
+        { number: 8, title: "Second", description: "second", state: "open", labels: [] },
+      ])
+      .mockResolvedValueOnce([]);
+    const { main } = await import("./main.js");
+
+    await main();
+
+    expect(runCodingAgentMock).toHaveBeenNthCalledWith(1, "Issue #7: First\n\nfirst");
+    expect(runCodingAgentMock).toHaveBeenNthCalledWith(2, "Issue #8: Second\n\nsecond");
+  });
+
   it("logs and exits when there are no open issues", async () => {
     const { DEFAULT_PROMPT, main } = await import("./main.js");
 
     await main();
 
     expect(runCodingAgentMock).not.toHaveBeenCalled();
+    expect(console.log).toHaveBeenCalledWith(DEFAULT_PROMPT);
+  });
+
+  it("closes outdated issues before selecting work", async () => {
+    listOpenIssuesMock
+      .mockResolvedValueOnce([
+        { number: 2, title: "Old task", description: "N/A", state: "open", labels: ["outdated"] },
+        { number: 3, title: "Active task", description: "Do this", state: "open", labels: [] },
+      ])
+      .mockResolvedValueOnce([]);
+    const { main } = await import("./main.js");
+
+    await main();
+
+    expect(closeIssueMock).toHaveBeenCalledWith(2);
+    expect(markInProgressMock).toHaveBeenCalledWith(3);
+    expect(runCodingAgentMock).toHaveBeenCalledWith("Issue #3: Active task\n\nDo this");
+  });
+
+  it("does not run completed issues when no actionable work remains", async () => {
+    listOpenIssuesMock.mockResolvedValue([
+      { number: 4, title: "Done", description: "Done", state: "open", labels: ["completed"] },
+    ]);
+    const { DEFAULT_PROMPT, main } = await import("./main.js");
+
+    await main();
+
+    expect(runCodingAgentMock).not.toHaveBeenCalled();
+    expect(markInProgressMock).not.toHaveBeenCalled();
     expect(console.log).toHaveBeenCalledWith(DEFAULT_PROMPT);
   });
 

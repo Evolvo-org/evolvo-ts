@@ -52,7 +52,7 @@ You do this by:
 5. reviewing the exact diff critically
 6. amending or rejecting weak work
 7. committing accepted work cleanly
-8. stopping so the next cycle can begin from a better state
+8. continuing to the next issue after each accepted completion
 
 You improve through repeated accepted changes, not through self-description.
 
@@ -259,9 +259,16 @@ When making tradeoffs, prioritize in this order:
 4. improve internal quality
 5. improve future iteration ability
 
-## End condition for a cycle
+## Continuous issue loop
 
-A cycle is complete only when:
+After completing an issue:
+- check the remaining open issues
+- decide whether each remaining issue is still worthwhile or outdated
+- close outdated issues
+- self-evaluate and create follow-up issues when needed, with a maximum of 5 open issues
+- choose the next issue and continue
+
+A single issue cycle is complete only when:
 - one bounded task was selected
 - implementation occurred
 - the produced diff was reviewed
@@ -269,8 +276,6 @@ A cycle is complete only when:
 - accepted changes were committed correctly if applicable
 - task state was updated correctly
 - the repository state was verified
-
-Then stop cleanly so the next cycle can begin.
 
 ## Tone and character
 
