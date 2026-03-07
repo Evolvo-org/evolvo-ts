@@ -139,6 +139,53 @@ describe("runCodingAgent", () => {
     await expect(runCodingAgent("Merge and continue")).resolves.toEqual({ mergedPullRequest: true });
   });
 
+  it("logs command, exit code, and duration for command executions", async () => {
+    startThreadMock.mockReturnValue({ runStreamed: runStreamedMock });
+    runStreamedMock.mockResolvedValue(createEventStream([
+      {
+        type: "item.started",
+        item: {
+          id: "1",
+          type: "command_execution",
+          command: "pnpm validate",
+          aggregated_output: "",
+          status: "in_progress",
+        },
+      },
+      {
+        type: "item.completed",
+        item: {
+          id: "1",
+          type: "command_execution",
+          command: "pnpm validate",
+          exit_code: 1,
+          aggregated_output: "failed",
+          status: "failed",
+        },
+      },
+      {
+        type: "item.completed",
+        item: {
+          id: "2",
+          type: "agent_message",
+          text: "Validation failed, fix pending.",
+        },
+      },
+    ]));
+
+    vi.spyOn(Date, "now")
+      .mockReturnValueOnce(1000)
+      .mockReturnValue(1450);
+
+    const { runCodingAgent } = await import("./runCodingAgent.js");
+
+    await expect(runCodingAgent("Run validation")).resolves.toEqual({ mergedPullRequest: false });
+
+    expect(console.log).toHaveBeenCalledWith(
+      "[command completed] command=\"pnpm validate\" name=pnpm exit=1 duration=450ms",
+    );
+  });
+
   it("flags successful pull request merges from agent messages", async () => {
     startThreadMock.mockReturnValue({ runStreamed: runStreamedMock });
     runStreamedMock.mockResolvedValue(createEventStream([

@@ -13,6 +13,10 @@ export type CodingAgentRunResult = {
   mergedPullRequest: boolean;
 };
 
+type CommandExecutionLogDetails = {
+  startedAtMs?: number;
+};
+
 function getThread(): Thread {
   if (!activeThread) {
     activeThread = codex.startThread(CODING_AGENT_THREAD_OPTIONS);
@@ -30,7 +34,20 @@ function formatFileChanges(item: Extract<ThreadItem, { type: "file_change" }>): 
   return item.changes.map((change) => `${change.kind} ${change.path}`).join(", ");
 }
 
-function logCompletedItem(item: ThreadItem): void {
+function getCommandName(command: string): string {
+  const [commandName] = command.trim().split(/\s+/, 1);
+  return commandName || "unknown";
+}
+
+function formatDuration(durationMs: number | undefined): string {
+  if (durationMs === undefined || !Number.isFinite(durationMs) || durationMs < 0) {
+    return "unknown";
+  }
+
+  return `${Math.round(durationMs)}ms`;
+}
+
+function logCompletedItem(item: ThreadItem, details?: CommandExecutionLogDetails): void {
   if (item.type === "file_change") {
     console.log(`[file_change] ${formatFileChanges(item)}\n`);
     return;
@@ -38,7 +55,15 @@ function logCompletedItem(item: ThreadItem): void {
 
   if (item.type === "command_execution") {
     const output = item.aggregated_output.trim();
-    console.log(`[command completed] ${item.command} (exit ${item.exit_code ?? "unknown"})`);
+    const commandName = getCommandName(item.command);
+    const exitCode = item.exit_code ?? "unknown";
+    const duration = details?.startedAtMs !== undefined
+      ? formatDuration(Date.now() - details.startedAtMs)
+      : "unknown";
+
+    console.log(
+      `[command completed] command="${item.command}" name=${commandName} exit=${exitCode} duration=${duration}`,
+    );
 
     if (output) {
       console.log(`${output}\n`);
@@ -79,6 +104,7 @@ export async function runCodingAgent(prompt: string): Promise<CodingAgentRunResu
 
   const startedItems = new Set<string>();
   const completedItems = new Set<string>();
+  const commandStartTimes = new Map<string, number>();
   let fileChangeSeen = false;
   let mergedPullRequest = false;
   let finalResponse = "";
@@ -90,6 +116,9 @@ export async function runCodingAgent(prompt: string): Promise<CodingAgentRunResu
       }
 
       startedItems.add(event.item.id);
+      if (event.item.type === "command_execution") {
+        commandStartTimes.set(event.item.id, Date.now());
+      }
       logStartedItem(event.item);
       continue;
     }
@@ -130,7 +159,14 @@ export async function runCodingAgent(prompt: string): Promise<CodingAgentRunResu
         mergedPullRequest = true;
       }
 
-      logCompletedItem(event.item);
+      const details = event.item.type === "command_execution"
+        ? { startedAtMs: commandStartTimes.get(event.item.id) }
+        : undefined;
+      if (event.item.type === "command_execution") {
+        commandStartTimes.delete(event.item.id);
+      }
+
+      logCompletedItem(event.item, details);
       continue;
     }
 
