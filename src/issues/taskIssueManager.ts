@@ -62,6 +62,8 @@ function buildLabels(issue: GitHubIssue, options: { inProgress: boolean; complet
 }
 
 export class TaskIssueManager {
+  private static readonly ISSUES_PER_PAGE = 100;
+
   public constructor(private readonly client: GitHubClient) {}
 
   public async createIssue(title: string, description: string): Promise<IssueActionResult> {
@@ -82,7 +84,22 @@ export class TaskIssueManager {
   }
 
   public async listOpenIssues(): Promise<IssueSummary[]> {
-    const issues = await this.client.get<GitHubIssue[]>("?state=open&per_page=100");
+    const issues: GitHubIssue[] = [];
+    let page = 1;
+
+    while (true) {
+      const batch = await this.client.get<GitHubIssue[]>(
+        `?state=open&per_page=${TaskIssueManager.ISSUES_PER_PAGE}&page=${page}`,
+      );
+      issues.push(...batch);
+
+      if (batch.length < TaskIssueManager.ISSUES_PER_PAGE) {
+        break;
+      }
+
+      page += 1;
+    }
+
     return issues.filter((issue) => issue.pull_request === undefined).map(formatIssue);
   }
 
