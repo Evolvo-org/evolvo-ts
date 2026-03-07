@@ -2,6 +2,7 @@ import {
   recordDiscordControlCommandReceipt,
   recordGracefulShutdownRequest,
   readDiscordControlCursor,
+  type GracefulShutdownMode,
   type GracefulShutdownRequest,
   writeDiscordControlCursor,
 } from "./gracefulShutdown.js";
@@ -137,8 +138,24 @@ function parseOperatorDecision(content: string): "continue" | "quit" | null {
   return null;
 }
 
-function isGracefulShutdownCommand(content: string): boolean {
-  return content.trim().toLowerCase() === "/quit";
+function parseGracefulShutdownCommand(
+  content: string,
+): { command: GracefulShutdownRequest["command"]; mode: GracefulShutdownMode } | null {
+  const normalized = content.trim().toLowerCase().replace(/\s+/g, " ");
+  if (normalized === "/quit after tasks") {
+    return {
+      command: "/quit after tasks",
+      mode: "after-tasks",
+    };
+  }
+  if (normalized === "/quit") {
+    return {
+      command: "/quit",
+      mode: "after-current-task",
+    };
+  }
+
+  return null;
 }
 
 function parseStartProjectName(content: string): string | null {
@@ -196,7 +213,7 @@ async function sendStartupBootMessage(config: DiscordControlConfig): Promise<voi
   const startedAt = new Date().toISOString();
   const content = [
     "🤖 Evolvo runtime booted.",
-    "Operator control is online for cycle-limit decisions, graceful shutdown, and `/startProject` requests.",
+    "Operator control is online for cycle-limit decisions, graceful shutdown (`/quit`, `/quit after tasks`), and `/startProject` requests.",
     `Started at: ${startedAt}`,
   ].join("\n");
 
@@ -250,11 +267,19 @@ async function sendIssueStartNotification(
   });
 }
 
-async function sendGracefulShutdownAcknowledgement(config: DiscordControlConfig): Promise<void> {
-  const content = [
-    `<@${config.operatorUserId}> Graceful shutdown requested.`,
-    "Evolvo will finish the current task and then stop before starting another issue.",
-  ].join("\n");
+async function sendGracefulShutdownAcknowledgement(
+  config: DiscordControlConfig,
+  request: GracefulShutdownRequest,
+): Promise<void> {
+  const content = request.mode === "after-tasks"
+    ? [
+      `<@${config.operatorUserId}> Queue-drain shutdown requested.`,
+      "Evolvo will finish the current actionable queue, will not plan or create new work, and will stop once the queue is drained.",
+    ].join("\n")
+    : [
+      `<@${config.operatorUserId}> Graceful shutdown requested.`,
+      "Evolvo will finish the current task and then stop before starting another issue.",
+    ].join("\n");
 
   await fetchDiscordJson<{ id: string }>(config, `/channels/${config.controlChannelId}/messages`, {
     method: "POST",
@@ -461,14 +486,16 @@ export async function pollDiscordGracefulShutdownCommand(
         continue;
       }
 
-      if (isGracefulShutdownCommand(message.content)) {
+      const shutdownCommand = parseGracefulShutdownCommand(message.content);
+      if (shutdownCommand !== null) {
         const recordedRequest = await recordGracefulShutdownRequest(workDir, {
           messageId: message.id,
+          mode: shutdownCommand.mode,
         });
         gracefulShutdownRequest = recordedRequest.request;
         if (recordedRequest.created) {
           try {
-            await sendGracefulShutdownAcknowledgement(config);
+            await sendGracefulShutdownAcknowledgement(config, recordedRequest.request);
           } catch (error) {
             const sendMessage = buildStepFailureMessage("send-quit-ack", error);
             console.error(`Discord graceful shutdown acknowledgement failed: ${sendMessage}`);

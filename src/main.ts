@@ -32,7 +32,8 @@ import {
   waitForRunLoopRetry,
 } from "./runtime/loopUtils.js";
 import {
-  consumeGracefulShutdownRequest,
+  clearGracefulShutdownRequest,
+  readGracefulShutdownRequest,
   type GracefulShutdownRequest,
 } from "./runtime/gracefulShutdown.js";
 import {
@@ -171,18 +172,48 @@ function buildGracefulShutdownLogMessage(
   return `Graceful shutdown requested via Discord ${request.command}. ${reason}`;
 }
 
-async function stopIfGracefulShutdownRequested(
+function isQueueDrainGracefulShutdownRequest(request: GracefulShutdownRequest | null): boolean {
+  return request?.mode === "after-tasks";
+}
+
+async function readPendingGracefulShutdownRequest(
+  workDir: string,
+  discordHandlers: DiscordControlHandlers,
+): Promise<GracefulShutdownRequest | null> {
+  await pollDiscordGracefulShutdownCommand(workDir, discordHandlers);
+  return readGracefulShutdownRequest(workDir);
+}
+
+async function stopIfSingleTaskGracefulShutdownRequested(
   workDir: string,
   reason: string,
   discordHandlers: DiscordControlHandlers,
 ): Promise<boolean> {
-  await pollDiscordGracefulShutdownCommand(workDir, discordHandlers);
-  const request = await consumeGracefulShutdownRequest(workDir);
+  const request = await readPendingGracefulShutdownRequest(workDir, discordHandlers);
+  if (request === null || isQueueDrainGracefulShutdownRequest(request)) {
+    return false;
+  }
+
+  await clearGracefulShutdownRequest(workDir);
+  console.log(buildGracefulShutdownLogMessage(request, reason));
+  return true;
+}
+
+async function stopIfGracefulShutdownPreventsNewWork(
+  workDir: string,
+  reason: string,
+  discordHandlers: DiscordControlHandlers,
+): Promise<boolean> {
+  const request = await readPendingGracefulShutdownRequest(workDir, discordHandlers);
   if (request === null) {
     return false;
   }
 
-  console.log(buildGracefulShutdownLogMessage(request, reason));
+  await clearGracefulShutdownRequest(workDir);
+  const shutdownReason = isQueueDrainGracefulShutdownRequest(request)
+    ? "Queue-drain shutdown is active. Planning and replenishment are disabled, so no new work will be started."
+    : reason;
+  console.log(buildGracefulShutdownLogMessage(request, shutdownReason));
   return true;
 }
 
@@ -219,13 +250,13 @@ export async function main(): Promise<void> {
   const gracefulShutdownListener = await startDiscordGracefulShutdownListener(WORK_DIR, discordHandlers);
 
   try {
-    if (await stopIfGracefulShutdownRequested(WORK_DIR, "Stopping before starting a new task.", discordHandlers)) {
+    if (await stopIfSingleTaskGracefulShutdownRequested(WORK_DIR, "Stopping before starting a new task.", discordHandlers)) {
       return;
     }
 
     let cycleLimit = MAX_ISSUE_CYCLES;
     issueCycleLoop: for (let cycle = 1; ; cycle += 1) {
-      if (await stopIfGracefulShutdownRequested(WORK_DIR, "Stopping before starting a new task.", discordHandlers)) {
+      if (await stopIfSingleTaskGracefulShutdownRequested(WORK_DIR, "Stopping before starting a new task.", discordHandlers)) {
         return;
       }
 
@@ -279,7 +310,7 @@ export async function main(): Promise<void> {
               });
             },
           });
-          if (await stopIfGracefulShutdownRequested(WORK_DIR, "Stopping before starting a new task.", discordHandlers)) {
+          if (await stopIfSingleTaskGracefulShutdownRequested(WORK_DIR, "Stopping before starting a new task.", discordHandlers)) {
             return;
           }
 
@@ -287,7 +318,7 @@ export async function main(): Promise<void> {
 
           if (!selectedIssue) {
             if (
-              await stopIfGracefulShutdownRequested(
+              await stopIfGracefulShutdownPreventsNewWork(
                 WORK_DIR,
                 "Stopping before planner replenishment.",
                 discordHandlers,
@@ -318,7 +349,7 @@ export async function main(): Promise<void> {
 
             if (createdIssues.length > 0) {
               if (
-                await stopIfGracefulShutdownRequested(
+                await stopIfGracefulShutdownPreventsNewWork(
                   WORK_DIR,
                   "Stopping before starting a new task.",
                   discordHandlers,
@@ -334,7 +365,7 @@ export async function main(): Promise<void> {
               continue issueCycleLoop;
             }
 
-            if (await stopIfGracefulShutdownRequested(WORK_DIR, "Stopping before starting a new task.", discordHandlers)) {
+            if (await stopIfGracefulShutdownPreventsNewWork(WORK_DIR, "Stopping before starting a new task.", discordHandlers)) {
               return;
             }
 
@@ -448,7 +479,7 @@ export async function main(): Promise<void> {
             }
 
             if (
-              await stopIfGracefulShutdownRequested(
+              await stopIfSingleTaskGracefulShutdownRequested(
                 WORK_DIR,
                 "Current task completed. Stopping before starting another issue.",
                 discordHandlers,
@@ -583,7 +614,7 @@ export async function main(): Promise<void> {
           }
 
           if (
-            await stopIfGracefulShutdownRequested(
+            await stopIfSingleTaskGracefulShutdownRequested(
               WORK_DIR,
               "Current task completed. Stopping before starting another issue.",
               discordHandlers,

@@ -360,6 +360,7 @@ describe("operatorControl", () => {
       version: 1,
       source: "discord",
       command: "/quit",
+      mode: "after-current-task",
       messageId: "7001",
       requestedAt: expect.any(String),
     });
@@ -371,6 +372,50 @@ describe("operatorControl", () => {
         method: "POST",
         body: JSON.stringify({
           content: "<@operator-1> Graceful shutdown requested.\nEvolvo will finish the current task and then stop before starting another issue.",
+        }),
+      }),
+    );
+  });
+
+  it("records and acknowledges an authorized /quit after tasks queue-drain command", async () => {
+    const workDir = await createTempWorkDir();
+    tempDirs.push(workDir);
+    vi.stubEnv("DISCORD_BOT_TOKEN", "bot-token");
+    vi.stubEnv("DISCORD_CONTROL_GUILD_ID", "guild-1");
+    vi.stubEnv("DISCORD_CONTROL_CHANNEL_ID", "channel-1");
+    vi.stubEnv("DISCORD_OPERATOR_USER_ID", "operator-1");
+
+    const fetchSpy = vi.fn()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify([{ id: "7050", content: "boot", author: { id: "someone" } }]), { status: 200 }),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify([{ id: "7051", content: "/quit   after   tasks", author: { id: "operator-1" } }]),
+          { status: 200 },
+        ),
+      )
+      .mockResolvedValueOnce(new Response(JSON.stringify({ id: "ack-queue-drain" }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchSpy);
+
+    const request = await pollDiscordGracefulShutdownCommand(workDir);
+
+    expect(request).toEqual({
+      version: 1,
+      source: "discord",
+      command: "/quit after tasks",
+      mode: "after-tasks",
+      messageId: "7051",
+      requestedAt: expect.any(String),
+    });
+    expect(fetchSpy).toHaveBeenCalledTimes(3);
+    expect(fetchSpy).toHaveBeenNthCalledWith(
+      3,
+      "https://discord.com/api/v10/channels/channel-1/messages",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({
+          content: "<@operator-1> Queue-drain shutdown requested.\nEvolvo will finish the current actionable queue, will not plan or create new work, and will stop once the queue is drained.",
         }),
       }),
     );
@@ -490,6 +535,32 @@ describe("operatorControl", () => {
       .mockResolvedValueOnce(
         new Response(
           JSON.stringify([{ id: "8001", content: "/quit", author: { id: "intruder-1" } }]),
+          { status: 200 },
+        ),
+      );
+    vi.stubGlobal("fetch", fetchSpy);
+
+    const request = await pollDiscordGracefulShutdownCommand(workDir);
+
+    expect(request).toBeNull();
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it("ignores /quit after tasks messages from unauthorized users", async () => {
+    const workDir = await createTempWorkDir();
+    tempDirs.push(workDir);
+    vi.stubEnv("DISCORD_BOT_TOKEN", "bot-token");
+    vi.stubEnv("DISCORD_CONTROL_GUILD_ID", "guild-1");
+    vi.stubEnv("DISCORD_CONTROL_CHANNEL_ID", "channel-1");
+    vi.stubEnv("DISCORD_OPERATOR_USER_ID", "operator-1");
+
+    const fetchSpy = vi.fn()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify([{ id: "8010", content: "boot", author: { id: "someone" } }]), { status: 200 }),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify([{ id: "8011", content: "/quit after tasks", author: { id: "intruder-1" } }]),
           { status: 200 },
         ),
       );
