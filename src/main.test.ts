@@ -433,6 +433,9 @@ describe("main", () => {
     expect(console.error).toHaveBeenCalledWith("Startup bootstrap created 0 issues from 3 repository-derived template(s).");
     expect(console.error).toHaveBeenCalledWith("Startup repository-derived bootstrap created 0 issues. Issue queue remains empty.");
     expect(console.error).toHaveBeenCalledWith(
+      "Startup bootstrap diagnostics: context=repository-derived bootstrap targetCount=3 templateCount=3 createdCount=0.",
+    );
+    expect(console.error).toHaveBeenCalledWith(
       "Recovery: verify GitHub token permissions and repository issue settings, then run `pnpm dev -- issues list` and create an issue manually if needed.",
     );
     expect(console.log).toHaveBeenCalledWith("Cycle 1 queue health: open=0 selected=none queueAction=bootstrap:0");
@@ -455,7 +458,9 @@ describe("main", () => {
     await main();
 
     expect(console.error).toHaveBeenCalledWith("Startup repository analysis failed: analysis boom");
-    expect(console.error).toHaveBeenCalledWith("Startup issue bootstrap is falling back to default issue templates.");
+    expect(console.error).toHaveBeenCalledWith(
+      "Startup issue bootstrap is falling back to default issue templates (targetCount=3).",
+    );
     expect(replenishSelfImprovementIssuesMock).toHaveBeenCalledWith({ minimumIssueCount: 3, maximumOpenIssues: 5 });
     expect(runCodingAgentMock).toHaveBeenCalledWith("Issue #30: Fallback issue\n\nfallback");
   });
@@ -468,9 +473,14 @@ describe("main", () => {
     await main();
 
     expect(console.error).toHaveBeenCalledWith("Startup repository analysis failed: analysis boom");
-    expect(console.error).toHaveBeenCalledWith("Startup issue bootstrap is falling back to default issue templates.");
+    expect(console.error).toHaveBeenCalledWith(
+      "Startup issue bootstrap is falling back to default issue templates (targetCount=3).",
+    );
     expect(console.error).toHaveBeenCalledWith("Startup fallback issue creation failed: issue create denied");
     expect(console.error).toHaveBeenCalledWith("Startup fallback bootstrap created 0 issues. Issue queue remains empty.");
+    expect(console.error).toHaveBeenCalledWith(
+      "Startup bootstrap diagnostics: context=fallback bootstrap targetCount=3 templateCount=default createdCount=0.",
+    );
     expect(console.error).toHaveBeenCalledWith(
       "Recovery: verify GitHub token permissions and repository issue settings, then run `pnpm dev -- issues list` and create an issue manually if needed.",
     );
@@ -487,8 +497,13 @@ describe("main", () => {
     await main();
 
     expect(console.error).toHaveBeenCalledWith("Startup repository analysis failed: analysis boom");
-    expect(console.error).toHaveBeenCalledWith("Startup issue bootstrap is falling back to default issue templates.");
+    expect(console.error).toHaveBeenCalledWith(
+      "Startup issue bootstrap is falling back to default issue templates (targetCount=3).",
+    );
     expect(console.error).toHaveBeenCalledWith("Startup fallback bootstrap created 0 issues. Issue queue remains empty.");
+    expect(console.error).toHaveBeenCalledWith(
+      "Startup bootstrap diagnostics: context=fallback bootstrap targetCount=3 templateCount=default createdCount=0.",
+    );
     expect(console.error).toHaveBeenCalledWith(
       "Recovery: verify GitHub token permissions and repository issue settings, then run `pnpm dev -- issues list` and create an issue manually if needed.",
     );
