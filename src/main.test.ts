@@ -25,6 +25,7 @@ const buildLifecycleStateCommentMock = vi.fn();
 const writeRuntimeReadinessSignalMock = vi.fn();
 const requestCycleLimitDecisionFromOperatorMock = vi.fn();
 const runDiscordOperatorControlStartupCheckMock = vi.fn();
+const notifyIssueStartedInDiscordMock = vi.fn();
 
 const DEFAULT_RUN_RESULT = {
   mergedPullRequest: false,
@@ -90,6 +91,7 @@ vi.mock("./runtime/runtimeReadiness.js", () => ({
 }));
 
 vi.mock("./runtime/operatorControl.js", () => ({
+  notifyIssueStartedInDiscord: notifyIssueStartedInDiscordMock,
   requestCycleLimitDecisionFromOperator: requestCycleLimitDecisionFromOperatorMock,
   runDiscordOperatorControlStartupCheck: runDiscordOperatorControlStartupCheckMock,
 }));
@@ -248,6 +250,8 @@ describe("main", () => {
     requestCycleLimitDecisionFromOperatorMock.mockResolvedValue(null);
     runDiscordOperatorControlStartupCheckMock.mockReset();
     runDiscordOperatorControlStartupCheckMock.mockResolvedValue(undefined);
+    notifyIssueStartedInDiscordMock.mockReset();
+    notifyIssueStartedInDiscordMock.mockResolvedValue(undefined);
     process.argv = ["node", "test-runner.ts"];
     vi.spyOn(console, "log").mockImplementation(() => {});
     vi.spyOn(console, "error").mockImplementation(() => {});
@@ -309,6 +313,13 @@ describe("main", () => {
     expect(addProgressCommentMock).toHaveBeenCalledWith(12, expect.stringContaining("## Canonical Lifecycle State"));
     expect(addProgressCommentMock).toHaveBeenCalledWith(12, expect.stringContaining("## Task Start"));
     expect(addProgressCommentMock).toHaveBeenCalledWith(12, expect.stringContaining("## Task Execution Log"));
+    expect(notifyIssueStartedInDiscordMock).toHaveBeenCalledWith({
+      issueNumber: 12,
+      issueTitle: "Fix login redirect",
+      issueUrl: "https://github.com/owner/repo/issues/12",
+      repository: "owner/repo",
+      lifecycleState: "selected -> executing",
+    });
     expect(runCodingAgentMock).toHaveBeenCalledWith("Issue #12: Fix login redirect\n\nHandle callback URL.");
     expect(console.log).toHaveBeenCalledWith("Cycle 1 queue health: open=1 selected=#12");
     expect(recordChallengeAttemptMetricsMock).not.toHaveBeenCalled();
@@ -420,6 +431,7 @@ describe("main", () => {
     await main();
 
     expect(markInProgressMock).not.toHaveBeenCalled();
+    expect(notifyIssueStartedInDiscordMock).not.toHaveBeenCalled();
     expect(addProgressCommentMock).not.toHaveBeenCalledWith(9, expect.stringContaining("## Task Start"));
     expect(addProgressCommentMock).toHaveBeenCalledWith(9, expect.stringContaining("## Task Execution Log"));
     expect(runCodingAgentMock).toHaveBeenCalledWith("Issue #9: B\n\nB");

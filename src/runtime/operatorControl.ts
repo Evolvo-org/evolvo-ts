@@ -19,7 +19,21 @@ const DEFAULT_POLL_INTERVAL_MS = 5 * 1000;
 const DEFAULT_CYCLE_EXTENSION = 25;
 const DISCORD_API_BASE_URL = "https://discord.com/api/v10";
 
-type DiscordOperatorStep = "verify-channel" | "read-history" | "send-boot-message" | "send-prompt" | "wait-for-reply";
+type DiscordOperatorStep =
+  | "verify-channel"
+  | "read-history"
+  | "send-boot-message"
+  | "send-prompt"
+  | "wait-for-reply"
+  | "send-issue-start";
+
+type DiscordIssueStartNotification = {
+  issueNumber: number;
+  issueTitle: string;
+  issueUrl: string;
+  repository: string;
+  lifecycleState: string;
+};
 
 function getRequiredTrimmedEnv(name: string, env: NodeJS.ProcessEnv): string | null {
   const value = env[name]?.trim();
@@ -134,6 +148,50 @@ async function sendStartupBootMessage(config: DiscordControlConfig): Promise<voi
   });
 }
 
+async function sendIssueStartNotification(
+  config: DiscordControlConfig,
+  notification: DiscordIssueStartNotification,
+): Promise<void> {
+  await fetchDiscordJson<{ id: string }>(config, `/channels/${config.controlChannelId}/messages`, {
+    method: "POST",
+    body: JSON.stringify({
+      content: `<@${config.operatorUserId}>`,
+      embeds: [
+        {
+          title: `Started Issue #${notification.issueNumber}`,
+          description: notification.issueTitle,
+          url: notification.issueUrl,
+          fields: [
+            {
+              name: "State",
+              value: notification.lifecycleState,
+              inline: true,
+            },
+            {
+              name: "Repository",
+              value: notification.repository,
+              inline: true,
+            },
+          ],
+        },
+      ],
+      components: [
+        {
+          type: 1,
+          components: [
+            {
+              type: 2,
+              style: 5,
+              label: "Open GitHub Issue",
+              url: notification.issueUrl,
+            },
+          ],
+        },
+      ],
+    }),
+  });
+}
+
 function getHighestSnowflakeId(ids: string[]): string {
   let highest = ids[0] ?? "0";
   for (const id of ids) {
@@ -243,6 +301,33 @@ export async function runDiscordOperatorControlStartupCheck(): Promise<void> {
   }
 
   console.log("Discord operator control startup boot message posted.");
+}
+
+export async function notifyIssueStartedInDiscord(
+  notification: DiscordIssueStartNotification,
+): Promise<void> {
+  const config = getDiscordControlConfigFromEnv();
+  if (!config) {
+    return;
+  }
+
+  try {
+    try {
+      await verifyControlChannel(config);
+    } catch (error) {
+      throw new Error(buildStepFailureMessage("verify-channel", error));
+    }
+
+    try {
+      await sendIssueStartNotification(config, notification);
+    } catch (error) {
+      throw new Error(buildStepFailureMessage("send-issue-start", error));
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "unknown error";
+    console.error(`Discord issue start notification failed: ${message}`);
+    logDiscordMissingAccessHint(message);
+  }
 }
 
 export async function requestCycleLimitDecisionFromOperator(
