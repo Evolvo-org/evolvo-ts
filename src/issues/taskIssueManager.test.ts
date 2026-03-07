@@ -78,6 +78,31 @@ describe("TaskIssueManager", () => {
     expect(result[0]?.number).toBe(1);
   });
 
+  it("aggregates open issues across pages and excludes pull requests from all pages", async () => {
+    const client = createClientMock();
+    const firstPage = Array.from({ length: 100 }, (_, index) => createIssue({ number: index + 1 }));
+    firstPage[3] = createIssue({ number: 4, pull_request: { url: "pr-1" } });
+
+    client.get
+      .mockResolvedValueOnce(firstPage)
+      .mockResolvedValueOnce([
+        createIssue({ number: 101 }),
+        createIssue({ number: 102, pull_request: { url: "pr-2" } }),
+      ]);
+
+    const manager = new TaskIssueManager(client as never);
+
+    const result = await manager.listOpenIssues();
+
+    expect(client.get).toHaveBeenNthCalledWith(1, "?state=open&per_page=100&page=1");
+    expect(client.get).toHaveBeenNthCalledWith(2, "?state=open&per_page=100&page=2");
+    expect(result.map((issue) => issue.number)).toEqual([
+      ...Array.from({ length: 3 }, (_, index) => index + 1),
+      ...Array.from({ length: 96 }, (_, index) => index + 5),
+      101,
+    ]);
+  });
+
   it("marks an issue in progress", async () => {
     const client = createClientMock();
     client.get.mockResolvedValue(createIssue({ labels: [{ name: "bug" }] }));
