@@ -1,17 +1,28 @@
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   getDiscordControlConfigFromEnv,
   notifyIssueStartedInDiscord,
+  pollDiscordGracefulShutdownCommand,
   requestCycleLimitDecisionFromOperator,
   runDiscordOperatorControlStartupCheck,
 } from "./operatorControl.js";
 
+async function createTempWorkDir(): Promise<string> {
+  return mkdtemp(join(tmpdir(), "operator-control-"));
+}
+
 describe("operatorControl", () => {
+  const tempDirs: string[] = [];
+
   beforeEach(() => {
     vi.useFakeTimers();
   });
 
-  afterEach(() => {
+  afterEach(async () => {
+    await Promise.all(tempDirs.map((directory) => rm(directory, { recursive: true, force: true })));
     vi.restoreAllMocks();
     vi.unstubAllEnvs();
     vi.unstubAllGlobals();
@@ -77,6 +88,14 @@ describe("operatorControl", () => {
       "Discord operator control startup preflight passed (verify-channel, read-history).",
     );
     expect(logSpy).toHaveBeenCalledWith("Discord operator control startup boot message posted.");
+    expect(fetchSpy).toHaveBeenNthCalledWith(
+      3,
+      "https://discord.com/api/v10/channels/channel-1/messages",
+      expect.objectContaining({
+        method: "POST",
+        body: expect.stringContaining("graceful shutdown"),
+      }),
+    );
   });
 
   it("logs startup preflight step when Discord channel verification fails", async () => {
@@ -280,7 +299,7 @@ describe("operatorControl", () => {
     expect(fetchSpy).toHaveBeenCalledTimes(3);
   });
 
-  it("returns quit when operator replies quit", async () => {
+  it("returns quit when operator replies /quit", async () => {
     vi.stubEnv("DISCORD_BOT_TOKEN", "bot-token");
     vi.stubEnv("DISCORD_CONTROL_GUILD_ID", "guild-1");
     vi.stubEnv("DISCORD_CONTROL_CHANNEL_ID", "channel-1");
@@ -297,7 +316,7 @@ describe("operatorControl", () => {
       )
       .mockResolvedValueOnce(
         new Response(
-          JSON.stringify([{ id: "5001", content: "quit", author: { id: "operator-1" } }]),
+          JSON.stringify([{ id: "5001", content: "/quit", author: { id: "operator-1" } }]),
           { status: 200 },
         ),
       );
@@ -312,6 +331,75 @@ describe("operatorControl", () => {
       additionalCycles: 0,
       source: "discord",
     });
+  });
+
+  it("records and acknowledges an authorized /quit graceful shutdown command", async () => {
+    const workDir = await createTempWorkDir();
+    tempDirs.push(workDir);
+    vi.stubEnv("DISCORD_BOT_TOKEN", "bot-token");
+    vi.stubEnv("DISCORD_CONTROL_GUILD_ID", "guild-1");
+    vi.stubEnv("DISCORD_CONTROL_CHANNEL_ID", "channel-1");
+    vi.stubEnv("DISCORD_OPERATOR_USER_ID", "operator-1");
+
+    const fetchSpy = vi.fn()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify([{ id: "7000", content: "boot", author: { id: "someone" } }]), { status: 200 }),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify([{ id: "7001", content: "/quit", author: { id: "operator-1" } }]),
+          { status: 200 },
+        ),
+      )
+      .mockResolvedValueOnce(new Response(JSON.stringify({ id: "ack-1" }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchSpy);
+
+    const request = await pollDiscordGracefulShutdownCommand(workDir);
+
+    expect(request).toEqual({
+      version: 1,
+      source: "discord",
+      command: "/quit",
+      messageId: "7001",
+      requestedAt: expect.any(String),
+    });
+    expect(fetchSpy).toHaveBeenCalledTimes(3);
+    expect(fetchSpy).toHaveBeenNthCalledWith(
+      3,
+      "https://discord.com/api/v10/channels/channel-1/messages",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({
+          content: "<@operator-1> Graceful shutdown requested.\nEvolvo will finish the current task and then stop before starting another issue.",
+        }),
+      }),
+    );
+  });
+
+  it("ignores /quit messages from unauthorized users", async () => {
+    const workDir = await createTempWorkDir();
+    tempDirs.push(workDir);
+    vi.stubEnv("DISCORD_BOT_TOKEN", "bot-token");
+    vi.stubEnv("DISCORD_CONTROL_GUILD_ID", "guild-1");
+    vi.stubEnv("DISCORD_CONTROL_CHANNEL_ID", "channel-1");
+    vi.stubEnv("DISCORD_OPERATOR_USER_ID", "operator-1");
+
+    const fetchSpy = vi.fn()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify([{ id: "8000", content: "boot", author: { id: "someone" } }]), { status: 200 }),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify([{ id: "8001", content: "/quit", author: { id: "intruder-1" } }]),
+          { status: 200 },
+        ),
+      );
+    vi.stubGlobal("fetch", fetchSpy);
+
+    const request = await pollDiscordGracefulShutdownCommand(workDir);
+
+    expect(request).toBeNull();
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
   });
 
   it("returns null when Discord API fails and logs a Missing Access hint", async () => {
