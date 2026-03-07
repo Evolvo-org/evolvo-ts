@@ -27,6 +27,7 @@ import {
   waitForRunLoopRetry,
 } from "./runtime/loopUtils.js";
 import {
+  notifyIssueStartedInDiscord,
   requestCycleLimitDecisionFromOperator,
   runDiscordOperatorControlStartupCheck,
 } from "./runtime/operatorControl.js";
@@ -153,6 +154,7 @@ export async function main(): Promise<void> {
 
   const { GITHUB_OWNER, GITHUB_REPO } = await import("./environment.js");
   const issueManager = new TaskIssueManager(new GitHubClient(getGitHubConfig()));
+  const repositoryName = `${GITHUB_OWNER}/${GITHUB_REPO}`;
 
   console.log(`Hello from ${GITHUB_OWNER}/${GITHUB_REPO}!`);
   console.log(`Working directory: ${WORK_DIR}`);
@@ -274,6 +276,13 @@ export async function main(): Promise<void> {
 
         if (startedThisCycle) {
           await addIssueLifecycleComment(issueManager, selectedIssue.number, buildIssueStartComment(selectedIssue));
+          await notifyIssueStartedInDiscord({
+            issueNumber: selectedIssue.number,
+            issueTitle: selectedIssue.title,
+            issueUrl: `https://github.com/${repositoryName}/issues/${selectedIssue.number}`,
+            repository: repositoryName,
+            lifecycleState: "selected -> executing",
+          });
         }
 
         const prompt = buildPromptFromIssue(selectedIssue);
