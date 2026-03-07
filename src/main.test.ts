@@ -31,6 +31,11 @@ const startDiscordGracefulShutdownListenerMock = vi.fn();
 const stopDiscordGracefulShutdownListenerMock = vi.fn();
 const consumeGracefulShutdownRequestMock = vi.fn();
 const tryResolveRepositoryDefaultBranchMock = vi.fn();
+const createProjectProvisioningRequestIssueMock = vi.fn();
+const executeProjectProvisioningIssueMock = vi.fn();
+const isProjectProvisioningRequestIssueMock = vi.fn();
+const buildProjectProvisioningOutcomeCommentMock = vi.fn();
+const buildProjectProvisioningCompletionSummaryMock = vi.fn();
 
 const DEFAULT_RUN_RESULT = {
   mergedPullRequest: false,
@@ -119,6 +124,14 @@ vi.mock("./runtime/operatorControl.js", () => ({
   startDiscordGracefulShutdownListener: startDiscordGracefulShutdownListenerMock,
 }));
 
+vi.mock("./projects/projectProvisioning.js", () => ({
+  buildProjectProvisioningCompletionSummary: buildProjectProvisioningCompletionSummaryMock,
+  buildProjectProvisioningOutcomeComment: buildProjectProvisioningOutcomeCommentMock,
+  createProjectProvisioningRequestIssue: createProjectProvisioningRequestIssueMock,
+  executeProjectProvisioningIssue: executeProjectProvisioningIssueMock,
+  isProjectProvisioningRequestIssue: isProjectProvisioningRequestIssueMock,
+}));
+
 vi.mock("./issues/runIssueCommand.js", () => ({
   runIssueCommand: runIssueCommandMock,
 }));
@@ -189,6 +202,63 @@ describe("main", () => {
     runPostMergeSelfRestartMock.mockResolvedValue(undefined);
     tryResolveRepositoryDefaultBranchMock.mockReset();
     tryResolveRepositoryDefaultBranchMock.mockResolvedValue("main");
+    createProjectProvisioningRequestIssueMock.mockReset();
+    createProjectProvisioningRequestIssueMock.mockResolvedValue({
+      ok: true,
+      message: "Created issue #400.",
+      issueNumber: 400,
+      issueUrl: "https://github.com/owner/repo/issues/400",
+    });
+    executeProjectProvisioningIssueMock.mockReset();
+    executeProjectProvisioningIssueMock.mockResolvedValue({
+      ok: true,
+      metadata: {
+        owner: "owner",
+        displayName: "Habit CLI",
+        slug: "habit-cli",
+        repositoryName: "habit-cli",
+        issueLabel: "project:habit-cli",
+        workspaceRelativePath: "projects/habit-cli",
+        requestedBy: "discord:operator-1",
+        requestedAt: "2026-03-07T12:00:00.000Z",
+      },
+      record: {
+        slug: "habit-cli",
+        displayName: "Habit CLI",
+        kind: "managed",
+        issueLabel: "project:habit-cli",
+        trackerRepo: {
+          owner: "owner",
+          repo: "repo",
+          url: "https://github.com/owner/repo",
+        },
+        executionRepo: {
+          owner: "owner",
+          repo: "habit-cli",
+          url: "https://github.com/owner/habit-cli",
+          defaultBranch: "main",
+        },
+        cwd: "/tmp/evolvo/projects/habit-cli",
+        status: "active",
+        sourceIssueNumber: 400,
+        createdAt: "2026-03-07T12:00:00.000Z",
+        updatedAt: "2026-03-07T12:00:00.000Z",
+        provisioning: {
+          labelCreated: true,
+          repoCreated: true,
+          workspacePrepared: true,
+          lastError: null,
+        },
+      },
+      failureStep: null,
+      message: "Provisioned project Habit CLI.",
+    });
+    isProjectProvisioningRequestIssueMock.mockReset();
+    isProjectProvisioningRequestIssueMock.mockReturnValue(false);
+    buildProjectProvisioningOutcomeCommentMock.mockReset();
+    buildProjectProvisioningOutcomeCommentMock.mockReturnValue("## Project Provisioning");
+    buildProjectProvisioningCompletionSummaryMock.mockReset();
+    buildProjectProvisioningCompletionSummaryMock.mockReturnValue("Provisioning complete summary");
     runIssueCommandMock.mockReset();
     runIssueCommandMock.mockResolvedValue(false);
     getGitHubConfigMock.mockReset();
@@ -331,8 +401,115 @@ describe("main", () => {
     await main();
 
     expect(runDiscordOperatorControlStartupCheckMock).toHaveBeenCalledTimes(1);
-    expect(startDiscordGracefulShutdownListenerMock).toHaveBeenCalledWith("/tmp/evolvo");
+    expect(startDiscordGracefulShutdownListenerMock).toHaveBeenCalledWith(
+      "/tmp/evolvo",
+      expect.objectContaining({
+        onStartProject: expect.any(Function),
+      }),
+    );
     expect(stopDiscordGracefulShutdownListenerMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("processes provisioning issues without invoking the coding agent", async () => {
+    listOpenIssuesMock
+      .mockResolvedValueOnce([
+        {
+          number: 77,
+          title: "Start project Habit CLI",
+          description: "<!-- evolvo:project-provisioning -->",
+          state: "open",
+          labels: [],
+        },
+      ])
+      .mockResolvedValueOnce([]);
+    isProjectProvisioningRequestIssueMock.mockReturnValueOnce(true);
+    const { main } = await import("./main.js");
+
+    await main();
+
+    expect(executeProjectProvisioningIssueMock).toHaveBeenCalledWith({
+      issue: {
+        number: 77,
+        title: "Start project Habit CLI",
+        description: "<!-- evolvo:project-provisioning -->",
+        state: "open",
+        labels: [],
+      },
+      workDir: "/tmp/evolvo",
+      trackerOwner: "owner",
+      trackerRepo: "repo",
+      adminClient: expect.any(Object),
+    });
+    expect(runCodingAgentMock).not.toHaveBeenCalled();
+    expect(addProgressCommentMock).toHaveBeenCalledWith(77, "## Project Provisioning");
+    expect(markCompletedMock).toHaveBeenCalledWith(77, "Provisioning complete summary");
+    expect(closeIssueMock).toHaveBeenCalledWith(77);
+  });
+
+  it("closes failed provisioning issues after writing diagnostics", async () => {
+    listOpenIssuesMock
+      .mockResolvedValueOnce([
+        {
+          number: 78,
+          title: "Start project Habit CLI",
+          description: "<!-- evolvo:project-provisioning -->",
+          state: "open",
+          labels: [],
+        },
+      ])
+      .mockResolvedValueOnce([]);
+    isProjectProvisioningRequestIssueMock.mockReturnValueOnce(true);
+    executeProjectProvisioningIssueMock.mockResolvedValueOnce({
+      ok: false,
+      metadata: {
+        owner: "owner",
+        displayName: "Habit CLI",
+        slug: "habit-cli",
+        repositoryName: "habit-cli",
+        issueLabel: "project:habit-cli",
+        workspaceRelativePath: "projects/habit-cli",
+        requestedBy: "discord:operator-1",
+        requestedAt: "2026-03-07T12:00:00.000Z",
+      },
+      record: {
+        slug: "habit-cli",
+        displayName: "Habit CLI",
+        kind: "managed",
+        issueLabel: "project:habit-cli",
+        trackerRepo: {
+          owner: "owner",
+          repo: "repo",
+          url: "https://github.com/owner/repo",
+        },
+        executionRepo: {
+          owner: "owner",
+          repo: "habit-cli",
+          url: "https://github.com/owner/habit-cli",
+          defaultBranch: "main",
+        },
+        cwd: "/tmp/evolvo/projects/habit-cli",
+        status: "failed",
+        sourceIssueNumber: 78,
+        createdAt: "2026-03-07T12:00:00.000Z",
+        updatedAt: "2026-03-07T12:00:00.000Z",
+        provisioning: {
+          labelCreated: true,
+          repoCreated: true,
+          workspacePrepared: false,
+          lastError: "workspace failed",
+        },
+      },
+      failureStep: "workspace",
+      message: "workspace failed",
+    });
+    const { main } = await import("./main.js");
+
+    await main();
+
+    expect(runCodingAgentMock).not.toHaveBeenCalled();
+    expect(markCompletedMock).not.toHaveBeenCalledWith(78, expect.any(String));
+    expect(updateLabelsMock).toHaveBeenCalledWith(78, { remove: ["in progress"] });
+    expect(closeIssueMock).toHaveBeenCalledWith(78);
   });
 
   it("selects an open issue and uses it as the prompt", async () => {

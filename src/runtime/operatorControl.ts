@@ -1,9 +1,11 @@
 import {
+  recordDiscordControlCommandReceipt,
   recordGracefulShutdownRequest,
   readDiscordControlCursor,
   type GracefulShutdownRequest,
   writeDiscordControlCursor,
 } from "./gracefulShutdown.js";
+import { normalizeProjectNameInput } from "../projects/projectNaming.js";
 
 type DiscordControlConfig = {
   botToken: string;
@@ -21,6 +23,33 @@ export type CycleLimitDecision = {
   source: "discord";
 };
 
+export type StartProjectCommandRequest = {
+  messageId: string;
+  requestedAt: string;
+  requestedBy: string;
+  displayName: string;
+  slug: string;
+  repositoryName: string;
+  issueLabel: string;
+  workspaceRelativePath: string;
+};
+
+export type StartProjectCommandResult =
+  | {
+    ok: true;
+    message: string;
+    issueNumber: number;
+    issueUrl: string;
+  }
+  | {
+    ok: false;
+    message: string;
+  };
+
+export type DiscordControlHandlers = {
+  onStartProject?: (request: StartProjectCommandRequest) => Promise<StartProjectCommandResult>;
+};
+
 const DEFAULT_TIMEOUT_MS = 5 * 60 * 1000;
 const DEFAULT_POLL_INTERVAL_MS = 5 * 1000;
 const DEFAULT_CYCLE_EXTENSION = 25;
@@ -33,8 +62,9 @@ type DiscordOperatorStep =
   | "send-prompt"
   | "wait-for-reply"
   | "send-issue-start"
-  | "read-quit-commands"
-  | "send-quit-ack";
+  | "read-control-commands"
+  | "send-quit-ack"
+  | "send-start-project-ack";
 
 type DiscordIssueStartNotification = {
   issueNumber: number;
@@ -42,6 +72,12 @@ type DiscordIssueStartNotification = {
   issueUrl: string;
   repository: string;
   lifecycleState: string;
+};
+
+type DiscordControlMessage = {
+  id: string;
+  content: string;
+  author?: { id?: string };
 };
 
 function getRequiredTrimmedEnv(name: string, env: NodeJS.ProcessEnv): string | null {
@@ -105,6 +141,15 @@ function isGracefulShutdownCommand(content: string): boolean {
   return content.trim().toLowerCase() === "/quit";
 }
 
+function parseStartProjectName(content: string): string | null {
+  const match = content.match(/^\/startproject(?:\s+(.+))?$/i);
+  if (!match) {
+    return null;
+  }
+
+  return match[1]?.trim() ?? "";
+}
+
 function buildAuthHeaders(config: DiscordControlConfig): Record<string, string> {
   return {
     Authorization: `Bot ${config.botToken}`,
@@ -151,7 +196,7 @@ async function sendStartupBootMessage(config: DiscordControlConfig): Promise<voi
   const startedAt = new Date().toISOString();
   const content = [
     "🤖 Evolvo runtime booted.",
-    "Operator control is online for cycle-limit decisions and graceful shutdown.",
+    "Operator control is online for cycle-limit decisions, graceful shutdown, and `/startProject` requests.",
     `Started at: ${startedAt}`,
   ].join("\n");
 
@@ -210,6 +255,31 @@ async function sendGracefulShutdownAcknowledgement(config: DiscordControlConfig)
     `<@${config.operatorUserId}> Graceful shutdown requested.`,
     "Evolvo will finish the current task and then stop before starting another issue.",
   ].join("\n");
+
+  await fetchDiscordJson<{ id: string }>(config, `/channels/${config.controlChannelId}/messages`, {
+    method: "POST",
+    body: JSON.stringify({ content }),
+  });
+}
+
+async function sendStartProjectAcknowledgement(
+  config: DiscordControlConfig,
+  request: StartProjectCommandRequest,
+  result: StartProjectCommandResult,
+): Promise<void> {
+  const content = result.ok
+    ? [
+      `<@${config.operatorUserId}> Project start request queued for \`${request.displayName}\`.`,
+      `Tracker issue: #${result.issueNumber} (${result.issueUrl})`,
+      `Planned label: \`${request.issueLabel}\``,
+      `Planned repository: \`${request.repositoryName}\``,
+      `Planned workspace: \`${request.workspaceRelativePath}\``,
+    ].join("\n")
+    : [
+      `<@${config.operatorUserId}> Could not queue project start request for \`${request.displayName}\`.`,
+      result.message,
+      "Usage: `/startProject <project-name>`",
+    ].join("\n");
 
   await fetchDiscordJson<{ id: string }>(config, `/channels/${config.controlChannelId}/messages`, {
     method: "POST",
@@ -280,22 +350,14 @@ async function fetchControlChannelMessages(
     afterId?: string | null;
     limit?: number;
   } = {},
-): Promise<Array<{
-  id: string;
-  content: string;
-  author?: { id?: string };
-}>> {
+): Promise<DiscordControlMessage[]> {
   const query = new URLSearchParams();
   query.set("limit", String(options.limit ?? 50));
   if (options.afterId && options.afterId.trim().length > 0) {
     query.set("after", options.afterId);
   }
 
-  return fetchDiscordJson<Array<{
-    id: string;
-    content: string;
-    author?: { id?: string };
-  }>>(config, `/channels/${config.controlChannelId}/messages?${query.toString()}`);
+  return fetchDiscordJson<DiscordControlMessage[]>(config, `/channels/${config.controlChannelId}/messages?${query.toString()}`);
 }
 
 async function initializeDiscordControlCursor(
@@ -369,6 +431,7 @@ export async function runDiscordOperatorControlStartupCheck(): Promise<void> {
 
 export async function pollDiscordGracefulShutdownCommand(
   workDir: string,
+  handlers: DiscordControlHandlers = {},
 ): Promise<GracefulShutdownRequest | null> {
   const config = getDiscordControlConfigFromEnv();
   if (!config) {
@@ -384,31 +447,96 @@ export async function pollDiscordGracefulShutdownCommand(
 
     await writeDiscordControlCursor(workDir, getHighestSnowflakeId(messages.map((message) => message.id)));
 
-    const quitMessage = messages.find((message) =>
-      message.author?.id === config.operatorUserId && isGracefulShutdownCommand(message.content)
-    );
-    if (!quitMessage) {
-      return null;
-    }
+    let gracefulShutdownRequest: GracefulShutdownRequest | null = null;
+    const orderedMessages = [...messages].sort((left, right) => {
+      if (left.id === right.id) {
+        return 0;
+      }
 
-    const recordedRequest = await recordGracefulShutdownRequest(workDir, {
-      messageId: quitMessage.id,
+      return BigInt(left.id) < BigInt(right.id) ? -1 : 1;
     });
-    if (!recordedRequest.created) {
-      return recordedRequest.request;
+
+    for (const message of orderedMessages) {
+      if (message.author?.id !== config.operatorUserId) {
+        continue;
+      }
+
+      if (isGracefulShutdownCommand(message.content)) {
+        const recordedRequest = await recordGracefulShutdownRequest(workDir, {
+          messageId: message.id,
+        });
+        gracefulShutdownRequest = recordedRequest.request;
+        if (recordedRequest.created) {
+          try {
+            await sendGracefulShutdownAcknowledgement(config);
+          } catch (error) {
+            const sendMessage = buildStepFailureMessage("send-quit-ack", error);
+            console.error(`Discord graceful shutdown acknowledgement failed: ${sendMessage}`);
+            logDiscordMissingAccessHint(sendMessage);
+          }
+        }
+        continue;
+      }
+
+      const requestedProjectName = parseStartProjectName(message.content);
+      if (requestedProjectName === null || !handlers.onStartProject) {
+        continue;
+      }
+
+      const recordedReceipt = await recordDiscordControlCommandReceipt(workDir, {
+        command: "start-project",
+        messageId: message.id,
+      });
+      if (!recordedReceipt) {
+        continue;
+      }
+
+      let startProjectRequest: StartProjectCommandRequest | null = null;
+      let commandResult: StartProjectCommandResult;
+
+      try {
+        const normalized = normalizeProjectNameInput(requestedProjectName);
+        startProjectRequest = {
+          messageId: message.id,
+          requestedAt: new Date().toISOString(),
+          requestedBy: `discord:${config.operatorUserId}`,
+          displayName: normalized.displayName,
+          slug: normalized.slug,
+          repositoryName: normalized.repositoryName,
+          issueLabel: normalized.issueLabel,
+          workspaceRelativePath: normalized.workspaceRelativePath,
+        };
+        commandResult = await handlers.onStartProject(startProjectRequest);
+      } catch (error) {
+        const fallbackDisplayName = requestedProjectName.trim() || "<missing project name>";
+        startProjectRequest = {
+          messageId: message.id,
+          requestedAt: new Date().toISOString(),
+          requestedBy: `discord:${config.operatorUserId}`,
+          displayName: fallbackDisplayName,
+          slug: "",
+          repositoryName: "",
+          issueLabel: "",
+          workspaceRelativePath: "",
+        };
+        commandResult = {
+          ok: false,
+          message: error instanceof Error ? error.message : "Unknown project start request error.",
+        };
+      }
+
+      try {
+        await sendStartProjectAcknowledgement(config, startProjectRequest, commandResult);
+      } catch (error) {
+        const sendMessage = buildStepFailureMessage("send-start-project-ack", error);
+        console.error(`Discord project start acknowledgement failed: ${sendMessage}`);
+        logDiscordMissingAccessHint(sendMessage);
+      }
     }
 
-    try {
-      await sendGracefulShutdownAcknowledgement(config);
-    } catch (error) {
-      const message = buildStepFailureMessage("send-quit-ack", error);
-      console.error(`Discord graceful shutdown acknowledgement failed: ${message}`);
-      logDiscordMissingAccessHint(message);
-    }
-
-    return recordedRequest.request;
+    return gracefulShutdownRequest;
   } catch (error) {
-    const message = buildStepFailureMessage("read-quit-commands", error);
+    const message = buildStepFailureMessage("read-control-commands", error);
     console.error(`Discord graceful shutdown polling failed: ${message}`);
     logDiscordMissingAccessHint(message);
     return null;
@@ -421,6 +549,7 @@ export type DiscordGracefulShutdownListener = {
 
 export async function startDiscordGracefulShutdownListener(
   workDir: string,
+  handlers: DiscordControlHandlers = {},
 ): Promise<DiscordGracefulShutdownListener | null> {
   const config = getDiscordControlConfigFromEnv();
   if (!config) {
@@ -430,7 +559,7 @@ export async function startDiscordGracefulShutdownListener(
   try {
     await initializeDiscordControlCursor(config, workDir);
   } catch (error) {
-    const message = buildStepFailureMessage("read-quit-commands", error);
+    const message = buildStepFailureMessage("read-control-commands", error);
     console.error(`Discord graceful shutdown listener bootstrap failed: ${message}`);
     logDiscordMissingAccessHint(message);
   }
@@ -445,7 +574,7 @@ export async function startDiscordGracefulShutdownListener(
     }
 
     timer = setTimeout(() => {
-      pendingPoll = pollDiscordGracefulShutdownCommand(workDir)
+      pendingPoll = pollDiscordGracefulShutdownCommand(workDir, handlers)
         .catch(() => undefined)
         .then(() => undefined)
         .finally(() => {

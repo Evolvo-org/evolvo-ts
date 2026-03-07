@@ -55,6 +55,31 @@ describe("GitHubClient", () => {
     );
   });
 
+  it("calls generic GitHub API paths with auth headers", async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ login: "owner", type: "Organization" }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+
+    const client = createClient();
+
+    const result = await client.getApi<{ login: string; type: string }>("/users/owner");
+
+    expect(result).toEqual({ login: "owner", type: "Organization" });
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://api.github.com/users/owner",
+      expect.objectContaining({
+        method: "GET",
+        headers: expect.objectContaining({
+          Authorization: "Bearer secret-token",
+          Accept: "application/vnd.github+json",
+        }),
+      }),
+    );
+  });
+
   it("throws GitHubApiError with API message", async () => {
     fetchMock.mockResolvedValueOnce(
       new Response(JSON.stringify({ message: "Not Found" }), {

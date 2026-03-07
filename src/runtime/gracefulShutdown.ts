@@ -4,6 +4,7 @@ import { dirname, join } from "node:path";
 const EVOLVO_DIRECTORY_NAME = ".evolvo";
 const GRACEFUL_SHUTDOWN_REQUEST_FILE_NAME = "graceful-shutdown-request.json";
 const DISCORD_CONTROL_CURSOR_FILE_NAME = "discord-control-cursor.json";
+const DISCORD_CONTROL_RECEIPTS_DIRECTORY_NAME = "discord-control-receipts";
 const GRACEFUL_SHUTDOWN_REQUEST_VERSION = 1;
 
 export type GracefulShutdownRequest = {
@@ -93,6 +94,15 @@ export function getDiscordControlCursorPath(workDir: string): string {
   return join(workDir, EVOLVO_DIRECTORY_NAME, DISCORD_CONTROL_CURSOR_FILE_NAME);
 }
 
+function getDiscordControlReceiptPath(workDir: string, command: string, messageId: string): string {
+  return join(
+    workDir,
+    EVOLVO_DIRECTORY_NAME,
+    DISCORD_CONTROL_RECEIPTS_DIRECTORY_NAME,
+    `${command}-${messageId}.json`,
+  );
+}
+
 export async function readGracefulShutdownRequest(workDir: string): Promise<GracefulShutdownRequest | null> {
   const raw = await readJsonFile(getGracefulShutdownRequestPath(workDir));
   return normalizeGracefulShutdownRequest(raw);
@@ -149,4 +159,43 @@ export async function writeDiscordControlCursor(workDir: string, lastSeenMessage
   await writeJsonFile(getDiscordControlCursorPath(workDir), {
     lastSeenMessageId: normalizeMessageId(lastSeenMessageId),
   } satisfies DiscordControlCursorState);
+}
+
+export async function recordDiscordControlCommandReceipt(
+  workDir: string,
+  input: {
+    command: "start-project";
+    messageId: string;
+    recordedAt?: string;
+  },
+): Promise<boolean> {
+  const messageId = normalizeMessageId(input.messageId);
+  if (messageId === null) {
+    throw new Error("Discord control receipt message ID cannot be empty.");
+  }
+
+  const path = getDiscordControlReceiptPath(workDir, input.command, messageId);
+  try {
+    await fs.mkdir(dirname(path), { recursive: true });
+    await fs.writeFile(
+      path,
+      `${JSON.stringify({
+        command: input.command,
+        messageId,
+        recordedAt: isNonEmptyString(input.recordedAt) ? input.recordedAt.trim() : new Date().toISOString(),
+      }, null, 2)}\n`,
+      {
+        encoding: "utf8",
+        flag: "wx",
+      },
+    );
+    return true;
+  } catch (error) {
+    const errorCode = (error as NodeJS.ErrnoException).code;
+    if (errorCode === "EEXIST") {
+      return false;
+    }
+
+    throw error;
+  }
 }

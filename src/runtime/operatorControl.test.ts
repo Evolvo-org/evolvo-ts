@@ -376,6 +376,105 @@ describe("operatorControl", () => {
     );
   });
 
+  it("queues an authorized /startProject request and acknowledges the created tracker issue", async () => {
+    const workDir = await createTempWorkDir();
+    tempDirs.push(workDir);
+    vi.stubEnv("DISCORD_BOT_TOKEN", "bot-token");
+    vi.stubEnv("DISCORD_CONTROL_GUILD_ID", "guild-1");
+    vi.stubEnv("DISCORD_CONTROL_CHANNEL_ID", "channel-1");
+    vi.stubEnv("DISCORD_OPERATOR_USER_ID", "operator-1");
+
+    const onStartProject = vi.fn().mockResolvedValue({
+      ok: true,
+      message: "Created issue #555.",
+      issueNumber: 555,
+      issueUrl: "https://github.com/evolvo-auto/evolvo-ts/issues/555",
+    });
+    const fetchSpy = vi.fn()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify([{ id: "7100", content: "boot", author: { id: "someone" } }]), { status: 200 }),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify([{ id: "7101", content: "/startProject Habit CLI", author: { id: "operator-1" } }]),
+          { status: 200 },
+        ),
+      )
+      .mockResolvedValueOnce(new Response(JSON.stringify({ id: "ack-2" }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchSpy);
+
+    const request = await pollDiscordGracefulShutdownCommand(workDir, { onStartProject });
+
+    expect(request).toBeNull();
+    expect(onStartProject).toHaveBeenCalledWith({
+      messageId: "7101",
+      requestedAt: expect.any(String),
+      requestedBy: "discord:operator-1",
+      displayName: "Habit CLI",
+      slug: "habit-cli",
+      repositoryName: "habit-cli",
+      issueLabel: "project:habit-cli",
+      workspaceRelativePath: "projects/habit-cli",
+    });
+    expect(fetchSpy).toHaveBeenNthCalledWith(
+      3,
+      "https://discord.com/api/v10/channels/channel-1/messages",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({
+          content: [
+            "<@operator-1> Project start request queued for `Habit CLI`.",
+            "Tracker issue: #555 (https://github.com/evolvo-auto/evolvo-ts/issues/555)",
+            "Planned label: `project:habit-cli`",
+            "Planned repository: `habit-cli`",
+            "Planned workspace: `projects/habit-cli`",
+          ].join("\n"),
+        }),
+      }),
+    );
+  });
+
+  it("acknowledges invalid authorized /startProject commands without calling the handler", async () => {
+    const workDir = await createTempWorkDir();
+    tempDirs.push(workDir);
+    vi.stubEnv("DISCORD_BOT_TOKEN", "bot-token");
+    vi.stubEnv("DISCORD_CONTROL_GUILD_ID", "guild-1");
+    vi.stubEnv("DISCORD_CONTROL_CHANNEL_ID", "channel-1");
+    vi.stubEnv("DISCORD_OPERATOR_USER_ID", "operator-1");
+
+    const onStartProject = vi.fn();
+    const fetchSpy = vi.fn()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify([{ id: "7200", content: "boot", author: { id: "someone" } }]), { status: 200 }),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify([{ id: "7201", content: "/startProject", author: { id: "operator-1" } }]),
+          { status: 200 },
+        ),
+      )
+      .mockResolvedValueOnce(new Response(JSON.stringify({ id: "ack-3" }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchSpy);
+
+    await pollDiscordGracefulShutdownCommand(workDir, { onStartProject });
+
+    expect(onStartProject).not.toHaveBeenCalled();
+    expect(fetchSpy).toHaveBeenNthCalledWith(
+      3,
+      "https://discord.com/api/v10/channels/channel-1/messages",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({
+          content: [
+            "<@operator-1> Could not queue project start request for `<missing project name>`.",
+            "Project name is required.",
+            "Usage: `/startProject <project-name>`",
+          ].join("\n"),
+        }),
+      }),
+    );
+  });
+
   it("ignores /quit messages from unauthorized users", async () => {
     const workDir = await createTempWorkDir();
     tempDirs.push(workDir);
@@ -399,6 +498,33 @@ describe("operatorControl", () => {
     const request = await pollDiscordGracefulShutdownCommand(workDir);
 
     expect(request).toBeNull();
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it("ignores /startProject messages from unauthorized users", async () => {
+    const workDir = await createTempWorkDir();
+    tempDirs.push(workDir);
+    vi.stubEnv("DISCORD_BOT_TOKEN", "bot-token");
+    vi.stubEnv("DISCORD_CONTROL_GUILD_ID", "guild-1");
+    vi.stubEnv("DISCORD_CONTROL_CHANNEL_ID", "channel-1");
+    vi.stubEnv("DISCORD_OPERATOR_USER_ID", "operator-1");
+
+    const onStartProject = vi.fn();
+    const fetchSpy = vi.fn()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify([{ id: "7300", content: "boot", author: { id: "someone" } }]), { status: 200 }),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify([{ id: "7301", content: "/startProject Habit CLI", author: { id: "intruder-1" } }]),
+          { status: 200 },
+        ),
+      );
+    vi.stubGlobal("fetch", fetchSpy);
+
+    await pollDiscordGracefulShutdownCommand(workDir, { onStartProject });
+
+    expect(onStartProject).not.toHaveBeenCalled();
     expect(fetchSpy).toHaveBeenCalledTimes(2);
   });
 
