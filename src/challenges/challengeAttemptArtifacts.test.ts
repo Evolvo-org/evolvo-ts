@@ -64,7 +64,7 @@ describe("challengeAttemptArtifacts", () => {
         summary: {
           inspectedAreas: ["src/main.ts"],
           editedFiles: ["src/challenges/challengeAttemptArtifacts.ts"],
-          validationCommands: [{ command: "pnpm test", exitCode: 0, durationMs: 210 }],
+          validationCommands: [{ command: "pnpm test", commandName: "pnpm", exitCode: 0, durationMs: 210 }],
           failedValidationCommands: [],
           reviewOutcome: "accepted",
           pullRequestCreated: true,
@@ -87,7 +87,7 @@ describe("challengeAttemptArtifacts", () => {
       mergedPullRequest: true,
       inspectedAreas: ["src/main.ts"],
       editedFiles: ["src/challenges/challengeAttemptArtifacts.ts"],
-      validationCommands: [{ command: "pnpm test", exitCode: 0, durationMs: 210 }],
+      validationCommands: [{ command: "pnpm test", commandName: "pnpm", exitCode: 0, durationMs: 210 }],
       failedValidationCommands: [],
       finalResponseExcerpt: "Implemented and validated.",
     });

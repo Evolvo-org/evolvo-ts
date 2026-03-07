@@ -233,8 +233,8 @@ describe("main", () => {
       ...DEFAULT_RUN_RESULT,
       summary: {
         ...DEFAULT_RUN_RESULT.summary,
-        validationCommands: [{ command: "pnpm validate", exitCode: 1, durationMs: 321 }],
-        failedValidationCommands: [{ command: "pnpm validate", exitCode: 1, durationMs: 321 }],
+        validationCommands: [{ command: "pnpm validate", commandName: "pnpm", exitCode: 1, durationMs: 321 }],
+        failedValidationCommands: [{ command: "pnpm validate", commandName: "pnpm", exitCode: 1, durationMs: 321 }],
         reviewOutcome: "amended",
       },
     });
