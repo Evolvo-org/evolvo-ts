@@ -57,6 +57,28 @@ describe("retryGate", () => {
     });
   });
 
+  it("bypasses retry gating for non-challenge issues", async () => {
+    const workDir = await createTempWorkDir();
+    tempDirs.push(workDir);
+    const issue = createIssue({ labels: ["bug"] });
+
+    const decision = await evaluateChallengeRetryEligibility(workDir, issue, [issue], {
+      maxAttempts: 3,
+      cooldownMs: 60_000,
+      nowMs: 1_000,
+    });
+
+    expect(decision).toEqual({
+      eligible: true,
+      reason: "not-challenge",
+      attemptCount: 0,
+      cooldownRemainingMs: 0,
+      openCorrectiveIssueNumbers: [],
+      addLabels: [],
+      removeLabels: [],
+    });
+  });
+
   it("rejects retry when corrective issues are still open", async () => {
     const workDir = await createTempWorkDir();
     tempDirs.push(workDir);
@@ -170,6 +192,27 @@ describe("retryGate", () => {
     expect(decision.removeLabels).toEqual([]);
   });
 
+  it("keeps challenge blocked when blocked label is present without retry state", async () => {
+    const workDir = await createTempWorkDir();
+    tempDirs.push(workDir);
+
+    const challenge = createIssue({
+      number: 14,
+      labels: ["challenge", CHALLENGE_FAILED_LABEL, CHALLENGE_BLOCKED_LABEL, CHALLENGE_READY_TO_RETRY_LABEL],
+    });
+
+    const decision = await evaluateChallengeRetryEligibility(workDir, challenge, [challenge], {
+      maxAttempts: 3,
+      cooldownMs: 0,
+      nowMs: 4_000,
+    });
+
+    expect(decision.eligible).toBe(false);
+    expect(decision.reason).toBe("max-attempts-reached");
+    expect(decision.addLabels).toEqual([]);
+    expect(decision.removeLabels).toEqual([CHALLENGE_READY_TO_RETRY_LABEL]);
+  });
+
   it("clears retry state after success", async () => {
     const workDir = await createTempWorkDir();
     tempDirs.push(workDir);
@@ -191,4 +234,3 @@ describe("retryGate", () => {
     expect(stateAfterSuccess.failuresByChallenge).toEqual({});
   });
 });
-
