@@ -42,6 +42,7 @@ import {
 import { runIssueCommand } from "./issues/runIssueCommand.js";
 import { hasIssueLabel, isChallengeIssue } from "./issues/challengeIssue.js";
 import { TaskIssueManager, type IssueSummary } from "./issues/taskIssueManager.js";
+import { generateStartupIssueTemplates } from "./issues/startupIssueBootstrap.js";
 
 const MAX_ISSUE_CYCLES = 100;
 const MIN_REPLENISH_ISSUES = 3;
@@ -181,12 +182,30 @@ export async function main(): Promise<void> {
 
         if (!selectedIssue) {
           const isStartupBootstrap = cycle === 1 && openIssues.length === 0;
+          let analysisTemplates:
+            | Array<{
+              title: string;
+              description: string;
+            }>
+            | undefined;
+          if (!isStartupBootstrap && openIssues.length === 0) {
+            try {
+              analysisTemplates = await generateStartupIssueTemplates(WORK_DIR, { targetCount: MIN_REPLENISH_ISSUES });
+            } catch (error) {
+              if (error instanceof Error) {
+                console.error(`Queue analysis for replenishment templates failed: ${error.message}`);
+              } else {
+                console.error("Queue analysis for replenishment templates failed with an unknown error.");
+              }
+            }
+          }
           const createdIssues = isStartupBootstrap
             ? await bootstrapStartupIssues(issueManager, WORK_DIR)
             : (
                 await issueManager.replenishSelfImprovementIssues({
                   minimumIssueCount: MIN_REPLENISH_ISSUES,
                   maximumOpenIssues: MAX_OPEN_ISSUES,
+                  ...(analysisTemplates && analysisTemplates.length > 0 ? { templates: analysisTemplates } : {}),
                 })
               ).created;
           logCycleQueueHealth({

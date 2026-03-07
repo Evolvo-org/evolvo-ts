@@ -733,7 +733,7 @@ describe("main", () => {
 
     await main();
 
-    expect(generateStartupIssueTemplatesMock).not.toHaveBeenCalled();
+    expect(generateStartupIssueTemplatesMock).toHaveBeenCalledWith("/tmp/evolvo", { targetCount: 3 });
     expect(replenishSelfImprovementIssuesMock).toHaveBeenCalledWith({ minimumIssueCount: 3, maximumOpenIssues: 5 });
     expect(console.log).toHaveBeenCalledWith(
       "Cycle 1 queue health: open=1 selected=none queueAction=replenish created=1 outcome=continue",
@@ -794,6 +794,43 @@ describe("main", () => {
     );
     expect(runCodingAgentMock).toHaveBeenNthCalledWith(1, "Issue #31: Initial\n\nfirst");
     expect(runCodingAgentMock).toHaveBeenNthCalledWith(2, "Issue #32: Replenished\n\nsecond");
+  });
+
+  it("uses codebase analysis templates when replenishing a non-startup empty queue", async () => {
+    process.argv = ["node", "test-runner.ts"];
+    generateStartupIssueTemplatesMock.mockResolvedValueOnce([
+      { title: "Analysis issue A", description: "from analysis" },
+      { title: "Analysis issue B", description: "from analysis" },
+      { title: "Analysis issue C", description: "from analysis" },
+    ]);
+    listOpenIssuesMock
+      .mockResolvedValueOnce([
+        { number: 33, title: "Initial", description: "first", state: "open", labels: [] },
+      ])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([
+        { number: 34, title: "Analysis Replenished", description: "second", state: "open", labels: [] },
+      ])
+      .mockResolvedValueOnce([]);
+    replenishSelfImprovementIssuesMock.mockResolvedValueOnce({
+      created: [{ number: 34, title: "Analysis Replenished", description: "second", state: "open", labels: [] }],
+    });
+    const { main } = await import("./main.js");
+
+    await main();
+
+    expect(generateStartupIssueTemplatesMock).toHaveBeenCalledWith("/tmp/evolvo", { targetCount: 3 });
+    expect(replenishSelfImprovementIssuesMock).toHaveBeenCalledWith({
+      minimumIssueCount: 3,
+      maximumOpenIssues: 5,
+      templates: [
+        { title: "Analysis issue A", description: "from analysis" },
+        { title: "Analysis issue B", description: "from analysis" },
+        { title: "Analysis issue C", description: "from analysis" },
+      ],
+    });
+    expect(runCodingAgentMock).toHaveBeenNthCalledWith(1, "Issue #33: Initial\n\nfirst");
+    expect(runCodingAgentMock).toHaveBeenNthCalledWith(2, "Issue #34: Analysis Replenished\n\nsecond");
   });
 
   it("replenishes an empty queue mid-run and keeps processing without hitting exit paths", async () => {
