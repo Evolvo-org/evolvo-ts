@@ -138,4 +138,22 @@ describe("runCodingAgent", () => {
 
     await expect(runCodingAgent("Merge and continue")).resolves.toEqual({ mergedPullRequest: true });
   });
+
+  it("flags successful pull request merges from agent messages", async () => {
+    startThreadMock.mockReturnValue({ runStreamed: runStreamedMock });
+    runStreamedMock.mockResolvedValue(createEventStream([
+      {
+        type: "item.completed",
+        item: {
+          id: "1",
+          type: "agent_message",
+          text: "I merged the pull request into main and stopped for host restart.",
+        },
+      },
+    ]));
+
+    const { runCodingAgent } = await import("./runCodingAgent.js");
+
+    await expect(runCodingAgent("Merge and continue")).resolves.toEqual({ mergedPullRequest: true });
+  });
 });

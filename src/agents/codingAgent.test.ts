@@ -18,10 +18,8 @@ describe("buildCodingPrompt", () => {
     expect(prompt).toContain("open a pull request linked to the issue");
     expect(prompt).toContain("continue the reject/fix/re-review cycle until the review outcome is accept");
     expect(prompt).toContain("merge the pull request into main");
-    expect(prompt).toContain("run `pnpm i`");
-    expect(prompt).toContain("run `pnpm build`");
-    expect(prompt).toContain("run `pnpm typecheck`");
-    expect(prompt).toContain("run `pnpm start`");
+    expect(prompt).toContain("the outer host runtime is responsible for post-merge restart orchestration");
+    expect(prompt).toContain("do not run checkout, pull, install, build, or restart commands after the merge");
   });
 
   it("requires a continuous issue loop after each completion", () => {

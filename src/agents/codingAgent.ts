@@ -231,13 +231,9 @@ After opening the pull request:
 
 After an accept review:
 - merge the pull request into main
-- checkout main
-- pull latest main before starting the next cycle
-- run \`pnpm i\`
-- run \`pnpm build\`
-- run \`pnpm typecheck\`
-- run \`pnpm start\`
-- confirm the restart succeeded before continuing
+- stop after the merge succeeds
+- do not run checkout, pull, install, build, or restart commands after the merge
+- the outer host runtime is responsible for post-merge restart orchestration
 
 ## Required mindset
 

@@ -7,6 +7,7 @@ import {
 const codex = new Codex();
 let activeThread: Thread | null = null;
 const MERGE_PR_COMMAND_PATTERN = /\bgh\s+pr\s+merge\b/i;
+const MERGE_PR_MESSAGE_PATTERN = /\bmerged (the )?pull request\b|\bmerged .* into main\b/i;
 
 export type CodingAgentRunResult = {
   mergedPullRequest: boolean;
@@ -96,6 +97,9 @@ export async function runCodingAgent(prompt: string): Promise<CodingAgentRunResu
     if (event.type === "item.updated") {
       if (event.item.type === "agent_message") {
         finalResponse = event.item.text;
+        if (MERGE_PR_MESSAGE_PATTERN.test(event.item.text)) {
+          mergedPullRequest = true;
+        }
       }
       continue;
     }
@@ -113,6 +117,9 @@ export async function runCodingAgent(prompt: string): Promise<CodingAgentRunResu
 
       if (event.item.type === "agent_message") {
         finalResponse = event.item.text;
+        if (MERGE_PR_MESSAGE_PATTERN.test(event.item.text)) {
+          mergedPullRequest = true;
+        }
       }
 
       if (
