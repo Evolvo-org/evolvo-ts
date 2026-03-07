@@ -140,6 +140,23 @@ describe("runIssueCommand", () => {
     expect(console.error).toHaveBeenCalledWith("Issue number must be a positive integer.");
   });
 
+  it.each(["1abc", "01x", " 1", "1 ", "1.5", "-1", "0"])(
+    "rejects malformed issue number input: %s",
+    async (issueNumber) => {
+      const { runIssueCommand } = await import("./runIssueCommand.js");
+
+      await runIssueCommand(["issues", "start", issueNumber]);
+
+      expect(console.error).toHaveBeenCalledWith("Issue number must be a positive integer.");
+      expect(markInProgressMock).not.toHaveBeenCalled();
+      expect(addProgressCommentMock).not.toHaveBeenCalled();
+      expect(markCompletedMock).not.toHaveBeenCalled();
+      expect(closeIssueMock).not.toHaveBeenCalled();
+      expect(createIssueMock).not.toHaveBeenCalled();
+      expect(listOpenIssuesMock).not.toHaveBeenCalled();
+    },
+  );
+
   it("logs GitHub API errors", async () => {
     listOpenIssuesMock.mockRejectedValue(
       new GitHubApiError("GitHub API request failed (401): Bad credentials", 401, null),
