@@ -149,6 +149,28 @@ function formatRetryDecisionLog(issue: IssueSummary, decision: ChallengeRetryDec
   return `Challenge retry decision for issue #${issue.number}: eligible=${decision.eligible} reason=${decision.reason} attempts=${decision.attemptCount}/${CHALLENGE_MAX_ATTEMPTS}${cooldownSuffix}${corrective}`;
 }
 
+function buildChallengeRetryGateComment(issue: IssueSummary, decision: ChallengeRetryDecision): string {
+  const details = [
+    `- Decision: \`${decision.reason}\``,
+    `- Eligible to run this cycle: ${decision.eligible ? "yes" : "no"}`,
+    `- Attempts recorded: ${decision.attemptCount}/${CHALLENGE_MAX_ATTEMPTS}`,
+  ];
+
+  if (decision.cooldownRemainingMs > 0) {
+    details.push(`- Cooldown remaining: ${decision.cooldownRemainingMs}ms`);
+  }
+
+  if (decision.openCorrectiveIssueNumbers.length > 0) {
+    details.push(`- Open corrective issues: ${decision.openCorrectiveIssueNumbers.map((number) => `#${number}`).join(", ")}`);
+  }
+
+  return [
+    "## Challenge Retry Gate",
+    `- Issue #${issue.number} was evaluated by retry gating.`,
+    ...details,
+  ].join("\n");
+}
+
 async function applyChallengeRetryGate(
   issueManager: TaskIssueManager,
   openIssues: IssueSummary[],
@@ -184,7 +206,10 @@ async function applyChallengeRetryGate(
 
     if (decision.eligible) {
       eligible.push(nextIssue);
+      continue;
     }
+
+    await addIssueLifecycleComment(issueManager, issue.number, buildChallengeRetryGateComment(issue, decision));
   }
 
   return eligible;

@@ -518,6 +518,8 @@ describe("main", () => {
     await main();
 
     expect(runCodingAgentMock).not.toHaveBeenCalled();
+    expect(addProgressCommentMock).toHaveBeenCalledWith(90, expect.stringContaining("## Challenge Retry Gate"));
+    expect(addProgressCommentMock).toHaveBeenCalledWith(90, expect.stringContaining("Decision: `cooldown-active`"));
   });
 
   it("allows challenge retry when retry gate is eligible", async () => {

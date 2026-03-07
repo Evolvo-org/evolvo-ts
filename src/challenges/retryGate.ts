@@ -187,6 +187,18 @@ export async function evaluateChallengeRetryEligibility(
   const state = await readChallengeRetryState(workDir);
   const retryEntry = state.failuresByChallenge[String(issue.number)];
   const attemptCount = toFiniteNonNegativeInteger(retryEntry?.attempts);
+  const blockedLabelPresent = hasLabel(issue, CHALLENGE_BLOCKED_LABEL);
+
+  if (blockedLabelPresent) {
+    return {
+      eligible: false,
+      reason: "max-attempts-reached",
+      attemptCount,
+      cooldownRemainingMs: 0,
+      openCorrectiveIssueNumbers: [],
+      ...getManagedLabelChanges(issue, [CHALLENGE_FAILED_LABEL, CHALLENGE_BLOCKED_LABEL]),
+    };
+  }
 
   const failedLabelPresent = hasLabel(issue, CHALLENGE_FAILED_LABEL) || attemptCount > 0;
   if (!failedLabelPresent) {
@@ -250,4 +262,3 @@ export async function evaluateChallengeRetryEligibility(
     ...getManagedLabelChanges(issue, [CHALLENGE_FAILED_LABEL, CHALLENGE_READY_TO_RETRY_LABEL]),
   };
 }
-
