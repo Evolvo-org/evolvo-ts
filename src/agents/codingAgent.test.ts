@@ -20,6 +20,7 @@ describe("buildCodingPrompt", () => {
     expect(prompt).toContain("merge the pull request into main");
     expect(prompt).toContain("run `pnpm i`");
     expect(prompt).toContain("run `pnpm build`");
+    expect(prompt).toContain("run `pnpm typecheck`");
     expect(prompt).toContain("run `pnpm start`");
   });
 
