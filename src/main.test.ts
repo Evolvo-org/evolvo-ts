@@ -19,6 +19,8 @@ const recordChallengeAttemptOutcomeMock = vi.fn();
 const persistChallengeAttemptArtifactMock = vi.fn();
 const updateLabelsMock = vi.fn();
 const createIssueMock = vi.fn();
+const transitionCanonicalLifecycleStateMock = vi.fn();
+const buildLifecycleStateCommentMock = vi.fn();
 
 const DEFAULT_RUN_RESULT = {
   mergedPullRequest: false,
@@ -72,6 +74,11 @@ vi.mock("./challenges/retryGate.js", () => ({
 
 vi.mock("./challenges/challengeAttemptArtifacts.js", () => ({
   persistChallengeAttemptArtifact: persistChallengeAttemptArtifactMock,
+}));
+
+vi.mock("./runtime/lifecycleState.js", () => ({
+  transitionCanonicalLifecycleState: transitionCanonicalLifecycleStateMock,
+  buildLifecycleStateComment: buildLifecycleStateCommentMock,
 }));
 
 vi.mock("./issues/runIssueCommand.js", () => ({
@@ -182,6 +189,23 @@ describe("main", () => {
       message: "Created issue #100.",
       issue: { number: 100, title: "Generated", description: "body", state: "open", labels: [] },
     });
+    transitionCanonicalLifecycleStateMock.mockReset();
+    transitionCanonicalLifecycleStateMock.mockResolvedValue({
+      ok: true,
+      issueNumber: 1,
+      previousState: null,
+      entry: {
+        issueNumber: 1,
+        kind: "issue",
+        state: "selected",
+        updatedAt: "2026-03-07T00:00:00.000Z",
+        transitionCount: 1,
+        history: [],
+      },
+      message: "ok",
+    });
+    buildLifecycleStateCommentMock.mockReset();
+    buildLifecycleStateCommentMock.mockReturnValue("## Canonical Lifecycle State");
     process.argv = ["node", "test-runner.ts"];
     vi.spyOn(console, "log").mockImplementation(() => {});
     vi.spyOn(console, "error").mockImplementation(() => {});
@@ -216,6 +240,7 @@ describe("main", () => {
 
     expect(runIssueCommandMock).toHaveBeenCalledWith([]);
     expect(markInProgressMock).toHaveBeenCalledWith(12);
+    expect(addProgressCommentMock).toHaveBeenCalledWith(12, expect.stringContaining("## Canonical Lifecycle State"));
     expect(addProgressCommentMock).toHaveBeenCalledWith(12, expect.stringContaining("## Task Start"));
     expect(addProgressCommentMock).toHaveBeenCalledWith(12, expect.stringContaining("## Task Execution Log"));
     expect(runCodingAgentMock).toHaveBeenCalledWith("Issue #12: Fix login redirect\n\nHandle callback URL.");

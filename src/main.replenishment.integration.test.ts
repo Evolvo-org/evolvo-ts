@@ -10,6 +10,8 @@ const formatChallengeMetricsReportMock = vi.fn();
 const evaluateChallengeRetryEligibilityMock = vi.fn();
 const recordChallengeAttemptOutcomeMock = vi.fn();
 const persistChallengeAttemptArtifactMock = vi.fn();
+const transitionCanonicalLifecycleStateMock = vi.fn();
+const buildLifecycleStateCommentMock = vi.fn();
 
 type MockIssue = {
   number: number;
@@ -122,6 +124,11 @@ vi.mock("./challenges/retryGate.js", () => ({
 
 vi.mock("./challenges/challengeAttemptArtifacts.js", () => ({
   persistChallengeAttemptArtifact: persistChallengeAttemptArtifactMock,
+}));
+
+vi.mock("./runtime/lifecycleState.js", () => ({
+  transitionCanonicalLifecycleState: transitionCanonicalLifecycleStateMock,
+  buildLifecycleStateComment: buildLifecycleStateCommentMock,
 }));
 
 vi.mock("./github/githubConfig.js", () => ({
@@ -272,6 +279,23 @@ describe("main replenishment integration", () => {
       absolutePath: "/tmp/evolvo/.evolvo/challenge-attempts/0/0001.json",
       artifact: { attempt: 1, outcome: "success", executionSummary: { reviewOutcome: "accepted" }, runtimeError: null },
     });
+    transitionCanonicalLifecycleStateMock.mockReset();
+    transitionCanonicalLifecycleStateMock.mockResolvedValue({
+      ok: true,
+      issueNumber: 1,
+      previousState: null,
+      entry: {
+        issueNumber: 1,
+        kind: "issue",
+        state: "selected",
+        updatedAt: "2026-03-07T00:00:00.000Z",
+        transitionCount: 1,
+        history: [],
+      },
+      message: "ok",
+    });
+    buildLifecycleStateCommentMock.mockReset();
+    buildLifecycleStateCommentMock.mockReturnValue("## Canonical Lifecycle State");
     process.argv = ["node", "test-runner.ts"];
     vi.spyOn(console, "log").mockImplementation(() => {});
     vi.spyOn(console, "error").mockImplementation(() => {});
