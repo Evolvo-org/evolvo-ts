@@ -3,7 +3,12 @@ import { GitHubApiError, GitHubClient } from "../github/githubClient.js";
 import { TaskIssueManager } from "./taskIssueManager.js";
 
 function parseIssueNumber(value: string | undefined): number {
-  const issueNumber = Number.parseInt(value ?? "", 10);
+  const rawValue = value ?? "";
+  if (!/^\d+$/.test(rawValue)) {
+    throw new Error("Issue number must be a positive integer.");
+  }
+
+  const issueNumber = Number(rawValue);
 
   if (!Number.isInteger(issueNumber) || issueNumber < 1) {
     throw new Error("Issue number must be a positive integer.");
