@@ -235,6 +235,7 @@ After an accept review:
 - pull latest main before starting the next cycle
 - run \`pnpm i\`
 - run \`pnpm build\`
+- run \`pnpm typecheck\`
 - run \`pnpm start\`
 - confirm the restart succeeded before continuing
 
