@@ -19,6 +19,8 @@ const DEFAULT_POLL_INTERVAL_MS = 5 * 1000;
 const DEFAULT_CYCLE_EXTENSION = 25;
 const DISCORD_API_BASE_URL = "https://discord.com/api/v10";
 
+type DiscordOperatorStep = "verify-channel" | "read-history" | "send-boot-message" | "send-prompt" | "wait-for-reply";
+
 function getRequiredTrimmedEnv(name: string, env: NodeJS.ProcessEnv): string | null {
   const value = env[name]?.trim();
   return value && value.length > 0 ? value : null;
@@ -118,6 +120,20 @@ async function sendCycleLimitPrompt(
   });
 }
 
+async function sendStartupBootMessage(config: DiscordControlConfig): Promise<void> {
+  const startedAt = new Date().toISOString();
+  const content = [
+    "🤖 Evolvo runtime booted.",
+    "Operator control is online for cycle-limit decisions.",
+    `Started at: ${startedAt}`,
+  ].join("\n");
+
+  await fetchDiscordJson<{ id: string }>(config, `/channels/${config.controlChannelId}/messages`, {
+    method: "POST",
+    body: JSON.stringify({ content }),
+  });
+}
+
 function getHighestSnowflakeId(ids: string[]): string {
   let highest = ids[0] ?? "0";
   for (const id of ids) {
@@ -175,6 +191,60 @@ async function verifyControlChannel(config: DiscordControlConfig): Promise<void>
   }
 }
 
+function buildStepFailureMessage(step: DiscordOperatorStep, error: unknown): string {
+  const message = error instanceof Error ? error.message : "unknown error";
+  return `[${step}] ${message}`;
+}
+
+function logDiscordMissingAccessHint(message: string): void {
+  if (message.includes("code\": 50001") || message.toLowerCase().includes("missing access")) {
+    console.error(
+      "Discord bot is missing access to the configured control channel. Verify DISCORD_CONTROL_GUILD_ID, DISCORD_CONTROL_CHANNEL_ID, and bot channel permissions.",
+    );
+  }
+}
+
+export async function runDiscordOperatorControlStartupCheck(): Promise<void> {
+  const config = getDiscordControlConfigFromEnv();
+  if (!config) {
+    return;
+  }
+
+  try {
+    await verifyControlChannel(config);
+  } catch (error) {
+    const message = buildStepFailureMessage("verify-channel", error);
+    console.error(`Discord operator control startup preflight failed: ${message}`);
+    logDiscordMissingAccessHint(message);
+    return;
+  }
+
+  try {
+    await fetchDiscordJson<Array<{ id: string }>>(
+      config,
+      `/channels/${config.controlChannelId}/messages?limit=1`,
+    );
+  } catch (error) {
+    const message = buildStepFailureMessage("read-history", error);
+    console.error(`Discord operator control startup preflight failed: ${message}`);
+    logDiscordMissingAccessHint(message);
+    return;
+  }
+
+  console.log("Discord operator control startup preflight passed (verify-channel, read-history).");
+
+  try {
+    await sendStartupBootMessage(config);
+  } catch (error) {
+    const message = buildStepFailureMessage("send-boot-message", error);
+    console.error(`Discord operator control startup boot message failed: ${message}`);
+    logDiscordMissingAccessHint(message);
+    return;
+  }
+
+  console.log("Discord operator control startup boot message posted.");
+}
+
 export async function requestCycleLimitDecisionFromOperator(
   currentLimit: number,
 ): Promise<CycleLimitDecision | null> {
@@ -184,9 +254,26 @@ export async function requestCycleLimitDecisionFromOperator(
   }
 
   try {
-    await verifyControlChannel(config);
-    const promptMessage = await sendCycleLimitPrompt(config, currentLimit);
-    const decision = await waitForOperatorDecision(config, promptMessage.id);
+    try {
+      await verifyControlChannel(config);
+    } catch (error) {
+      throw new Error(buildStepFailureMessage("verify-channel", error));
+    }
+
+    let promptMessage: { id: string };
+    try {
+      promptMessage = await sendCycleLimitPrompt(config, currentLimit);
+    } catch (error) {
+      throw new Error(buildStepFailureMessage("send-prompt", error));
+    }
+
+    let decision: "continue" | "quit";
+    try {
+      decision = await waitForOperatorDecision(config, promptMessage.id);
+    } catch (error) {
+      throw new Error(buildStepFailureMessage("wait-for-reply", error));
+    }
+
     return {
       decision,
       additionalCycles: decision === "continue" ? config.cycleExtension : 0,
@@ -195,11 +282,7 @@ export async function requestCycleLimitDecisionFromOperator(
   } catch (error) {
     const message = error instanceof Error ? error.message : "unknown error";
     console.error(`Discord operator control failed: ${message}`);
-    if (message.includes("code\": 50001") || message.toLowerCase().includes("missing access")) {
-      console.error(
-        "Discord bot is missing access to the configured control channel. Verify DISCORD_CONTROL_GUILD_ID, DISCORD_CONTROL_CHANNEL_ID, and bot channel permissions.",
-      );
-    }
+    logDiscordMissingAccessHint(message);
     return null;
   }
 }

@@ -26,7 +26,10 @@ import {
   selectIssueForWork,
   waitForRunLoopRetry,
 } from "./runtime/loopUtils.js";
-import { requestCycleLimitDecisionFromOperator } from "./runtime/operatorControl.js";
+import {
+  requestCycleLimitDecisionFromOperator,
+  runDiscordOperatorControlStartupCheck,
+} from "./runtime/operatorControl.js";
 import {
   addIssueLifecycleComment,
   buildIssueExecutionComment,
@@ -44,7 +47,7 @@ import { runIssueCommand } from "./issues/runIssueCommand.js";
 import { hasIssueLabel, isChallengeIssue } from "./issues/challengeIssue.js";
 import { TaskIssueManager, type IssueSummary } from "./issues/taskIssueManager.js";
 
-const MAX_ISSUE_CYCLES = 1;
+const MAX_ISSUE_CYCLES = 5;
 const MIN_REPLENISH_ISSUES = 3;
 const MAX_OPEN_ISSUES = 5;
 const RUN_LOOP_GITHUB_MAX_RETRIES = 2;
@@ -154,6 +157,7 @@ export async function main(): Promise<void> {
   console.log(`Hello from ${GITHUB_OWNER}/${GITHUB_REPO}!`);
   console.log(`Working directory: ${WORK_DIR}`);
   await signalRestartReadinessIfRequested(WORK_DIR);
+  await runDiscordOperatorControlStartupCheck();
 
   let cycleLimit = MAX_ISSUE_CYCLES;
   issueCycleLoop: for (let cycle = 1; ; cycle += 1) {

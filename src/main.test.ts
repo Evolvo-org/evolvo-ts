@@ -24,6 +24,7 @@ const transitionCanonicalLifecycleStateMock = vi.fn();
 const buildLifecycleStateCommentMock = vi.fn();
 const writeRuntimeReadinessSignalMock = vi.fn();
 const requestCycleLimitDecisionFromOperatorMock = vi.fn();
+const runDiscordOperatorControlStartupCheckMock = vi.fn();
 
 const DEFAULT_RUN_RESULT = {
   mergedPullRequest: false,
@@ -90,6 +91,7 @@ vi.mock("./runtime/runtimeReadiness.js", () => ({
 
 vi.mock("./runtime/operatorControl.js", () => ({
   requestCycleLimitDecisionFromOperator: requestCycleLimitDecisionFromOperatorMock,
+  runDiscordOperatorControlStartupCheck: runDiscordOperatorControlStartupCheckMock,
 }));
 
 vi.mock("./issues/runIssueCommand.js", () => ({
@@ -244,6 +246,8 @@ describe("main", () => {
     writeRuntimeReadinessSignalMock.mockResolvedValue("/tmp/evolvo/.evolvo/runtime-readiness.json");
     requestCycleLimitDecisionFromOperatorMock.mockReset();
     requestCycleLimitDecisionFromOperatorMock.mockResolvedValue(null);
+    runDiscordOperatorControlStartupCheckMock.mockReset();
+    runDiscordOperatorControlStartupCheckMock.mockResolvedValue(undefined);
     process.argv = ["node", "test-runner.ts"];
     vi.spyOn(console, "log").mockImplementation(() => {});
     vi.spyOn(console, "error").mockImplementation(() => {});
@@ -280,6 +284,14 @@ describe("main", () => {
     });
     delete process.env.EVOLVO_RESTART_TOKEN;
     delete process.env.EVOLVO_READINESS_FILE;
+  });
+
+  it("runs Discord operator control startup preflight during runtime startup", async () => {
+    const { main } = await import("./main.js");
+
+    await main();
+
+    expect(runDiscordOperatorControlStartupCheckMock).toHaveBeenCalledTimes(1);
   });
 
   it("selects an open issue and uses it as the prompt", async () => {

@@ -375,7 +375,7 @@ Each cycle should leave you slightly better than before.
 `.trim();
 
 export const CODING_AGENT_THREAD_OPTIONS: ThreadOptions = {
-  model: "gpt-5.3-codex",
+  model: "gpt-5.4",
   sandboxMode: "workspace-write",
   workingDirectory: WORK_DIR,
   networkAccessEnabled: true,

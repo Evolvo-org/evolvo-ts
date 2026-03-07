@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   getDiscordControlConfigFromEnv,
   requestCycleLimitDecisionFromOperator,
+  runDiscordOperatorControlStartupCheck,
 } from "./operatorControl.js";
 
 describe("operatorControl", () => {
@@ -28,6 +29,85 @@ describe("operatorControl", () => {
 
     expect(decision).toBeNull();
     expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("logs startup preflight success when channel lookup and history read are accessible", async () => {
+    vi.stubEnv("DISCORD_BOT_TOKEN", "bot-token");
+    vi.stubEnv("DISCORD_CONTROL_GUILD_ID", "guild-1");
+    vi.stubEnv("DISCORD_CONTROL_CHANNEL_ID", "channel-1");
+    vi.stubEnv("DISCORD_OPERATOR_USER_ID", "operator-1");
+
+    const fetchSpy = vi.fn()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ id: "channel-1", guild_id: "guild-1" }), { status: 200 }),
+      )
+      .mockResolvedValueOnce(new Response(JSON.stringify([]), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ id: "boot-1" }), { status: 200 }));
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    vi.stubGlobal("fetch", fetchSpy);
+
+    await runDiscordOperatorControlStartupCheck();
+
+    expect(fetchSpy).toHaveBeenCalledTimes(3);
+    expect(logSpy).toHaveBeenCalledWith(
+      "Discord operator control startup preflight passed (verify-channel, read-history).",
+    );
+    expect(logSpy).toHaveBeenCalledWith("Discord operator control startup boot message posted.");
+  });
+
+  it("logs startup preflight step when Discord channel verification fails", async () => {
+    vi.stubEnv("DISCORD_BOT_TOKEN", "bot-token");
+    vi.stubEnv("DISCORD_CONTROL_GUILD_ID", "guild-1");
+    vi.stubEnv("DISCORD_CONTROL_CHANNEL_ID", "channel-1");
+    vi.stubEnv("DISCORD_OPERATOR_USER_ID", "operator-1");
+
+    const fetchSpy = vi.fn().mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({ message: "Missing Access", code: 50001 }),
+        { status: 403 },
+      ),
+    );
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    vi.stubGlobal("fetch", fetchSpy);
+
+    await runDiscordOperatorControlStartupCheck();
+
+    expect(errorSpy).toHaveBeenCalledWith(
+      expect.stringContaining("Discord operator control startup preflight failed: [verify-channel]"),
+    );
+    expect(errorSpy).toHaveBeenCalledWith(
+      "Discord bot is missing access to the configured control channel. Verify DISCORD_CONTROL_GUILD_ID, DISCORD_CONTROL_CHANNEL_ID, and bot channel permissions.",
+    );
+  });
+
+  it("logs startup boot message failure step when message post is denied", async () => {
+    vi.stubEnv("DISCORD_BOT_TOKEN", "bot-token");
+    vi.stubEnv("DISCORD_CONTROL_GUILD_ID", "guild-1");
+    vi.stubEnv("DISCORD_CONTROL_CHANNEL_ID", "channel-1");
+    vi.stubEnv("DISCORD_OPERATOR_USER_ID", "operator-1");
+
+    const fetchSpy = vi.fn()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ id: "channel-1", guild_id: "guild-1" }), { status: 200 }),
+      )
+      .mockResolvedValueOnce(new Response(JSON.stringify([]), { status: 200 }))
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({ message: "Missing Access", code: 50001 }),
+          { status: 403 },
+        ),
+      );
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    vi.stubGlobal("fetch", fetchSpy);
+
+    await runDiscordOperatorControlStartupCheck();
+
+    expect(errorSpy).toHaveBeenCalledWith(
+      expect.stringContaining("Discord operator control startup boot message failed: [send-boot-message]"),
+    );
+    expect(errorSpy).toHaveBeenCalledWith(
+      "Discord bot is missing access to the configured control channel. Verify DISCORD_CONTROL_GUILD_ID, DISCORD_CONTROL_CHANNEL_ID, and bot channel permissions.",
+    );
   });
 
   it("returns continue with configured cycle extension when operator replies continue", async () => {
@@ -119,7 +199,7 @@ describe("operatorControl", () => {
 
     expect(decision).toBeNull();
     expect(errorSpy).toHaveBeenCalledWith(
-      expect.stringContaining("Discord operator control failed: Discord API request failed (403)"),
+      expect.stringContaining("Discord operator control failed: [verify-channel] Discord API request failed (403)"),
     );
     expect(errorSpy).toHaveBeenCalledWith(
       "Discord bot is missing access to the configured control channel. Verify DISCORD_CONTROL_GUILD_ID, DISCORD_CONTROL_CHANNEL_ID, and bot channel permissions.",
