@@ -9,6 +9,8 @@ let activeThread: Thread | null = null;
 const MERGE_PR_COMMAND_PATTERN = /\bgh\s+pr\s+merge\b/i;
 const MERGE_PR_MESSAGE_PATTERN = /\bmerged (the )?pull request\b|\bmerged .* into main\b/i;
 const CREATE_PR_COMMAND_PATTERN = /\bgh\s+pr\s+create\b/i;
+const GITHUB_REPOSITORY_URL_PATTERN = /https:\/\/github\.com\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)(?:\.git)?(?:\/)?/gi;
+const GITHUB_PULL_REQUEST_URL_PATTERN = /https:\/\/github\.com\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)\/pull\/\d+/gi;
 const INSPECTION_COMMAND_PATTERN = /\b(rg|grep|cat|sed|ls|find|fd|tree|git\s+status|git\s+diff|git\s+show)\b/i;
 const VALIDATION_COMMAND_PATTERN = /\b(validate|test|vitest|jest|typecheck|lint|build|tsc|pytest|go test|cargo test)\b/i;
 
@@ -34,6 +36,9 @@ export type CodingAgentRunSummary = {
   failedValidationCommands: CommandExecutionSummary[];
   reviewOutcome: "accepted" | "amended";
   pullRequestCreated: boolean;
+  externalRepositories: string[];
+  externalPullRequests: string[];
+  mergedExternalPullRequest: boolean;
   finalResponse: string;
 };
 
@@ -106,6 +111,51 @@ function summarizeReviewOutcome(validationCommands: CommandExecutionSummary[]): 
   return validationCommands.some((command) => command.exitCode !== 0) ? "amended" : "accepted";
 }
 
+function normalizeRepositoryUrl(url: string): string {
+  const cleanUrl = url.trim().replace(/\/+$/, "");
+  return cleanUrl.endsWith(".git") ? cleanUrl.slice(0, -4) : cleanUrl;
+}
+
+function extractGitHubRepositoryUrls(text: string): string[] {
+  const urls = new Set<string>();
+  const matches = text.matchAll(GITHUB_REPOSITORY_URL_PATTERN);
+
+  for (const match of matches) {
+    urls.add(normalizeRepositoryUrl(match[0]));
+  }
+
+  return [...urls];
+}
+
+function extractGitHubPullRequestUrls(text: string): string[] {
+  const urls = new Set<string>();
+  const matches = text.matchAll(GITHUB_PULL_REQUEST_URL_PATTERN);
+
+  for (const match of matches) {
+    urls.add(match[0].replace(/\/+$/, ""));
+  }
+
+  return [...urls];
+}
+
+function getConfiguredRepositoryUrl(): string | null {
+  const owner = process.env.GITHUB_OWNER?.trim();
+  const repo = process.env.GITHUB_REPO?.trim();
+  if (!owner || !repo) {
+    return null;
+  }
+
+  return `https://github.com/${owner}/${repo}`;
+}
+
+function isExternalRepositoryUrl(url: string, configuredRepositoryUrl: string | null): boolean {
+  if (!configuredRepositoryUrl) {
+    return true;
+  }
+
+  return normalizeRepositoryUrl(url).toLowerCase() !== normalizeRepositoryUrl(configuredRepositoryUrl).toLowerCase();
+}
+
 function logCompletedItem(item: ThreadItem, details?: CommandExecutionLogDetails): void {
   if (item.type === "file_change") {
     console.log(`[file_change] ${formatFileChanges(item)}\n`);
@@ -166,12 +216,35 @@ export async function runCodingAgent(prompt: string): Promise<CodingAgentRunResu
   const commandStartTimes = new Map<string, number>();
   const inspectedAreas = new Set<string>();
   const editedFiles = new Set<string>();
+  const externalRepositories = new Set<string>();
+  const externalPullRequests = new Set<string>();
   const validationCommands: CommandExecutionSummary[] = [];
   const failedValidationCommands: CommandExecutionSummary[] = [];
   let fileChangeSeen = false;
   let mergedPullRequest = false;
+  let mergedExternalPullRequest = false;
   let pullRequestCreated = false;
   let finalResponse = "";
+  const configuredRepositoryUrl = getConfiguredRepositoryUrl();
+
+  function captureExternalReferences(text: string): void {
+    for (const repositoryUrl of extractGitHubRepositoryUrls(text)) {
+      if (isExternalRepositoryUrl(repositoryUrl, configuredRepositoryUrl)) {
+        externalRepositories.add(repositoryUrl);
+      }
+    }
+
+    for (const pullRequestUrl of extractGitHubPullRequestUrls(text)) {
+      const pullRequestRepositoryUrl = pullRequestUrl.replace(/\/pull\/\d+$/, "");
+      if (isExternalRepositoryUrl(pullRequestRepositoryUrl, configuredRepositoryUrl)) {
+        externalPullRequests.add(pullRequestUrl);
+        externalRepositories.add(pullRequestRepositoryUrl);
+        if (MERGE_PR_MESSAGE_PATTERN.test(text)) {
+          mergedExternalPullRequest = true;
+        }
+      }
+    }
+  }
 
   for await (const event of events) {
     if (event.type === "item.started") {
@@ -190,6 +263,7 @@ export async function runCodingAgent(prompt: string): Promise<CodingAgentRunResu
     if (event.type === "item.updated") {
       if (event.item.type === "agent_message") {
         finalResponse = event.item.text;
+        captureExternalReferences(event.item.text);
         if (MERGE_PR_MESSAGE_PATTERN.test(event.item.text)) {
           mergedPullRequest = true;
         }
@@ -210,6 +284,7 @@ export async function runCodingAgent(prompt: string): Promise<CodingAgentRunResu
 
       if (event.item.type === "agent_message") {
         finalResponse = event.item.text;
+        captureExternalReferences(event.item.text);
         if (MERGE_PR_MESSAGE_PATTERN.test(event.item.text)) {
           mergedPullRequest = true;
         }
@@ -221,10 +296,17 @@ export async function runCodingAgent(prompt: string): Promise<CodingAgentRunResu
         MERGE_PR_COMMAND_PATTERN.test(event.item.command)
       ) {
         mergedPullRequest = true;
+        if (externalPullRequests.size > 0) {
+          mergedExternalPullRequest = true;
+        }
       }
 
       if (event.item.type === "command_execution" && CREATE_PR_COMMAND_PATTERN.test(event.item.command)) {
         pullRequestCreated = true;
+      }
+      if (event.item.type === "command_execution") {
+        captureExternalReferences(event.item.command);
+        captureExternalReferences(event.item.aggregated_output);
       }
 
       if (event.item.type === "command_execution" && INSPECTION_COMMAND_PATTERN.test(event.item.command)) {
@@ -286,6 +368,9 @@ export async function runCodingAgent(prompt: string): Promise<CodingAgentRunResu
         failedValidationCommands,
         reviewOutcome: summarizeReviewOutcome(validationCommands),
         pullRequestCreated,
+        externalRepositories: [...externalRepositories],
+        externalPullRequests: [...externalPullRequests],
+        mergedExternalPullRequest,
         finalResponse,
       },
     };
@@ -306,6 +391,9 @@ export async function runCodingAgent(prompt: string): Promise<CodingAgentRunResu
       failedValidationCommands,
       reviewOutcome: summarizeReviewOutcome(validationCommands),
       pullRequestCreated,
+      externalRepositories: [...externalRepositories],
+      externalPullRequests: [...externalPullRequests],
+      mergedExternalPullRequest,
       finalResponse,
     },
   };

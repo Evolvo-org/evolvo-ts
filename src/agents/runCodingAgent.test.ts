@@ -36,6 +36,7 @@ describe("runCodingAgent", () => {
   });
 
   afterEach(() => {
+    vi.unstubAllEnvs();
     vi.restoreAllMocks();
   });
 
@@ -243,5 +244,97 @@ describe("runCodingAgent", () => {
         }),
       }),
     );
+  });
+
+  it("captures external repository and pull request evidence from command output", async () => {
+    vi.stubEnv("GITHUB_OWNER", "owner");
+    vi.stubEnv("GITHUB_REPO", "repo");
+    startThreadMock.mockReturnValue({ runStreamed: runStreamedMock });
+    runStreamedMock.mockResolvedValue(createEventStream([
+      {
+        type: "item.completed",
+        item: {
+          id: "1",
+          type: "command_execution",
+          command: "gh pr create --repo other-org/other-repo --title \"test\" --body \"test\"",
+          exit_code: 0,
+          aggregated_output: "https://github.com/other-org/other-repo/pull/12",
+        },
+      },
+      {
+        type: "item.completed",
+        item: {
+          id: "2",
+          type: "command_execution",
+          command: "gh pr merge https://github.com/other-org/other-repo/pull/12 --merge",
+          exit_code: 0,
+          aggregated_output: "Merged pull request https://github.com/other-org/other-repo/pull/12",
+        },
+      },
+      {
+        type: "item.completed",
+        item: {
+          id: "3",
+          type: "file_change",
+          status: "completed",
+          changes: [{ kind: "add", path: "notes.md" }],
+        },
+      },
+      {
+        type: "item.completed",
+        item: {
+          id: "4",
+          type: "agent_message",
+          text: "done",
+        },
+      },
+    ]));
+
+    const { runCodingAgent } = await import("./runCodingAgent.js");
+
+    await expect(runCodingAgent("Complete external repo workflow")).resolves.toEqual(
+      expect.objectContaining({
+        mergedPullRequest: true,
+        summary: expect.objectContaining({
+          externalRepositories: ["https://github.com/other-org/other-repo"],
+          externalPullRequests: ["https://github.com/other-org/other-repo/pull/12"],
+          mergedExternalPullRequest: true,
+        }),
+      }),
+    );
+  });
+
+  it("does not capture pull requests from the configured repository as external evidence", async () => {
+    vi.stubEnv("GITHUB_OWNER", "owner");
+    vi.stubEnv("GITHUB_REPO", "repo");
+    startThreadMock.mockReturnValue({ runStreamed: runStreamedMock });
+    runStreamedMock.mockResolvedValue(createEventStream([
+      {
+        type: "item.completed",
+        item: {
+          id: "1",
+          type: "command_execution",
+          command: "gh pr create --title \"self\" --body \"self\"",
+          exit_code: 0,
+          aggregated_output: "https://github.com/owner/repo/pull/88",
+        },
+      },
+      {
+        type: "item.completed",
+        item: {
+          id: "2",
+          type: "file_change",
+          status: "completed",
+          changes: [{ kind: "add", path: "notes.md" }],
+        },
+      },
+    ]));
+
+    const { runCodingAgent } = await import("./runCodingAgent.js");
+    const result = await runCodingAgent("Create self repository pull request");
+
+    expect(result.summary.externalRepositories).toEqual([]);
+    expect(result.summary.externalPullRequests).toEqual([]);
+    expect(result.summary.mergedExternalPullRequest).toBe(false);
   });
 });
