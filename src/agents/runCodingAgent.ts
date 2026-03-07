@@ -1,103 +1,139 @@
-import { Agent, run } from "@openai/agents";
-import { logToolCall } from "../logs/logToolCall";
-import { stringifyOutput } from "../utils/string/stringifyOutput";
+import { Codex, Thread, type ThreadItem } from "@openai/codex-sdk";
+import {
+  CODING_AGENT_THREAD_OPTIONS,
+  buildCodingPrompt,
+} from "./codingAgent.js";
 
-type LoggedRunResult = {
-  applyPatchSeen: boolean;
-};
+const codex = new Codex();
+let activeThread: Thread | null = null;
+
+function getThread(): Thread {
+  if (!activeThread) {
+    activeThread = codex.startThread(CODING_AGENT_THREAD_OPTIONS);
+  }
+
+  return activeThread;
+}
 
 function isFileEditRequest(prompt: string): boolean {
   return /\b(create|add|write|update|edit|modify|delete|remove)\b/i.test(prompt) &&
     /\b(file|files|src\/|\.ts|\.tsx|\.js|\.jsx|\.json|\.md)\b/i.test(prompt);
 }
 
-async function executeLoggedRun(
-  codingAgent: Agent,
-  prompt: string,
-): Promise<LoggedRunResult> {
+function formatFileChanges(item: Extract<ThreadItem, { type: "file_change" }>): string {
+  return item.changes.map((change) => `${change.kind} ${change.path}`).join(", ");
+}
+
+function logCompletedItem(item: ThreadItem): void {
+  if (item.type === "file_change") {
+    console.log(`[file_change] ${formatFileChanges(item)}\n`);
+    return;
+  }
+
+  if (item.type === "command_execution") {
+    const output = item.aggregated_output.trim();
+    console.log(`[command completed] ${item.command} (exit ${item.exit_code ?? "unknown"})`);
+
+    if (output) {
+      console.log(`${output}\n`);
+    } else {
+      console.log("");
+    }
+
+    return;
+  }
+
+  if (item.type === "agent_message") {
+    console.log(`[assistant]\n${item.text}\n`);
+  }
+}
+
+function logStartedItem(item: ThreadItem): void {
+  if (item.type === "command_execution") {
+    console.log(`[command] ${item.command}`);
+    return;
+  }
+
+  if (item.type === "mcp_tool_call") {
+    console.log(`[tool] mcp - ${item.server}.${item.tool}`);
+    return;
+  }
+
+  if (item.type === "web_search") {
+    console.log(`[tool] web_search - query: ${item.query}`);
+  }
+}
+
+export async function runCodingAgent(prompt: string): Promise<void> {
   console.log("=== Run starting ===");
   console.log(`[user] ${prompt}\n`);
 
-  let applyPatchSeen = false;
+  const thread = getThread();
+  const { events } = await thread.runStreamed(buildCodingPrompt(prompt));
 
-  const result = await run(codingAgent, prompt, { stream: true });
+  const startedItems = new Set<string>();
+  const completedItems = new Set<string>();
+  let fileChangeSeen = false;
+  let finalResponse = "";
 
-  for await (const event of result) {
-    if (event.type !== "run_item_stream_event") {
-      continue;
-    }
-
-    const { item } = event;
-
-    if (item.type === "tool_call_item") {
-      const rawItem = item.rawItem as { type?: string; [key: string]: unknown };
-      logToolCall(rawItem);
-      continue;
-    }
-
-    if (item.type === "tool_call_output_item") {
-      const rawItem = item.rawItem as { type?: string; [key: string]: unknown };
-      const outputPreview = stringifyOutput(item.output);
-      const isApplyPatch =
-        rawItem.type === "apply_patch_call_output" ||
-        outputPreview.startsWith("Created ") ||
-        outputPreview.startsWith("Updated ") ||
-        outputPreview.startsWith("Deleted ");
-
-      if (isApplyPatch) {
-        applyPatchSeen = true;
-        console.log(`[apply_patch] ${outputPreview}\n`);
+  for await (const event of events) {
+    if (event.type === "item.started") {
+      if (startedItems.has(event.item.id)) {
         continue;
       }
 
-      console.log(`[tool output]\n${outputPreview}\n`);
+      startedItems.add(event.item.id);
+      logStartedItem(event.item);
       continue;
     }
 
-    if (item.type === "message_output_item") {
-      console.log(`[assistant]\n${item.content}\n`);
+    if (event.type === "item.updated") {
+      if (event.item.type === "agent_message") {
+        finalResponse = event.item.text;
+      }
+      continue;
+    }
+
+    if (event.type === "item.completed") {
+      if (completedItems.has(event.item.id)) {
+        continue;
+      }
+
+      completedItems.add(event.item.id);
+
+      if (event.item.type === "file_change" && event.item.status === "completed") {
+        fileChangeSeen = true;
+      }
+
+      if (event.item.type === "agent_message") {
+        finalResponse = event.item.text;
+      }
+
+      logCompletedItem(event.item);
+      continue;
+    }
+
+    if (event.type === "turn.failed") {
+      throw new Error(event.error.message);
+    }
+
+    if (event.type === "error") {
+      throw new Error(event.message);
     }
   }
 
-  await result.completed;
-
   console.log("=== Run complete ===\n");
   console.log("Final answer:\n");
-  console.log(result.finalOutput ?? "");
+  console.log(finalResponse);
 
-  if (applyPatchSeen) {
-    console.log("\n[apply_patch] One or more apply_patch calls were executed.");
-    return { applyPatchSeen };
-  }
-
-  console.log("\n[apply_patch] No apply_patch calls detected in this run.");
-
-  return { applyPatchSeen };
-}
-
-export async function runCodingAgent(
-  codingAgent: Agent,
-  prompt: string,
-): Promise<void> {
-  const expectsApplyPatch = isFileEditRequest(prompt);
-  const firstRun = await executeLoggedRun(codingAgent, prompt);
-
-  if (!expectsApplyPatch || firstRun.applyPatchSeen) {
+  if (fileChangeSeen) {
+    console.log("\n[file_change] One or more repository edits were executed.");
     return;
   }
 
-  const retryPrompt = `${prompt}
+  console.log("\n[file_change] No repository edits were detected.");
 
-CRITICAL: This task requires a real repository edit. You must call apply_patch successfully.
-Do not answer with inline code only. If apply_patch is not called, the task is incomplete.`;
-
-  console.log("\n[apply_patch] Edit request detected but no apply_patch call was made. Retrying with a stricter prompt.\n");
-
-  const retryRun = await executeLoggedRun(codingAgent, retryPrompt);
-
-  if (retryRun.applyPatchSeen) {
-    return;
+  if (isFileEditRequest(prompt)) {
+    throw new Error("The Codex run did not make repository edits for a file-edit request.");
   }
-
-  throw new Error("The agent did not call apply_patch for a file-edit request.");
 }

@@ -1,11 +1,6 @@
-import { existsSync, mkdirSync } from "fs";
+import { mkdirSync } from "node:fs";
+import { resolve } from "node:path";
 
-export const WORK_DIR = "/home/paddy/evolvo-ts";
-//  verify that the directory exists, if not create it
+export const WORK_DIR = resolve(process.env.WORK_DIR ?? process.cwd());
 
-if (!existsSync(WORK_DIR)) {
-  mkdirSync(WORK_DIR);
-  console.log(`Created workspace directory: ${WORK_DIR}`);
-} else {
-  console.log(`Workspace directory already exists: ${WORK_DIR}`);
-}
+mkdirSync(WORK_DIR, { recursive: true });

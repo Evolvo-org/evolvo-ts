@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { stringifyOutput } from "./stringifyOutput";
+import { stringifyOutput } from "./stringifyOutput.js";
 
 describe("stringifyOutput", () => {
     it("returns strings as-is", () => {

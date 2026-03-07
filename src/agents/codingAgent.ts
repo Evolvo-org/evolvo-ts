@@ -1,53 +1,40 @@
-import { Agent, applyPatchTool, shellTool, webSearchTool } from "@openai/agents";
-import { shell } from "../tools/ShellExecutor";
-import { applyPatchAction, editor } from "../tools/ApplyPatch";
-import { context7ToolAction } from "../tools/Context7";
-import { runTestSuiteTool } from "../tools/RunTestSuite";
+import type { ThreadOptions } from "@openai/codex-sdk";
+import { WORK_DIR } from "../constants/workDir.js";
 
-const INSTRUCTIONS = `
-You are a coding agent working on this repository.
+export const CODING_AGENT_INSTRUCTIONS = `
+You are a coding agent working inside this repository.
 
-Core rule:
-- If the user asks to create, update, or delete files, you must use apply_patch to make the change.
-- Do not satisfy file-edit requests by only pasting code in the final answer.
-- Do not claim a file was created or updated unless apply_patch succeeded.
+Primary goal:
+- Make real repository edits to complete the task.
+- Prefer concrete changes over prose-only answers.
 
-Editing workflow:
-- Never edit code via shell commands.
-- Use shell only to inspect files and repo state.
-- Read the target file first before updating it.
-- Use apply_patch for all file creation, updates, and deletions.
-- Prefer the smallest change that satisfies the request.
+Editing rules:
+- Modify files directly in the repository when the task requires code changes.
+- Keep changes small and local.
 - Add or update tests when behavior changes.
-
-Verification workflow:
-- After making code changes, run the relevant tests with the run_test_suite tool.
-- Use testTarget="" to run the full suite.
-- Use a narrower testTarget first when you know the exact affected test file.
-- Inspect failing test output before making follow-up edits.
-
-Behavior rules:
-- Do not ask for permission.
 - Do not edit files outside this repository.
 - Do not edit secrets or environment files unless explicitly instructed.
 - Do not edit dependency lockfiles unless the task requires a dependency change.
-- Use web search or Context7 only when the task actually needs external documentation.
+
+Verification rules:
+- Run relevant tests after making code changes.
+- Inspect failures before making follow-up edits.
+- Treat failing tests as a signal to investigate, not something to silence.
 
 Response rules:
-- If the task required file edits, your final response must describe the actual files changed.
-- If apply_patch was not called successfully for a file-edit request, explain that the edit was not completed.
-`;
+- Briefly summarize the files changed.
+- Briefly summarize verification results.
+`.trim();
 
-export const codingAgent = new Agent({
-  name: "Local tools agent",
+export const CODING_AGENT_THREAD_OPTIONS: ThreadOptions = {
   model: "gpt-5.3-codex",
-  instructions: INSTRUCTIONS,
-  tools: [
-    // computerTool({ computer }),
-    webSearchTool({ searchContextSize: 'medium' }),
-    shellTool({ shell, needsApproval: false }),
-    applyPatchTool({ editor, needsApproval: false }),
-    context7ToolAction,
-    runTestSuiteTool,
-  ],
-});
+  sandboxMode: "workspace-write",
+  workingDirectory: WORK_DIR,
+  networkAccessEnabled: true,
+  webSearchEnabled: true,
+  approvalPolicy: "never",
+};
+
+export function buildCodingPrompt(task: string): string {
+  return `${CODING_AGENT_INSTRUCTIONS}\n\nTask:\n${task}`;
+}
