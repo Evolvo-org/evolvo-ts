@@ -1,1 +1,133 @@
 # evolvo-ts
+
+`evolvo-ts` is a self-improving runtime that pulls GitHub issues, executes one bounded improvement cycle at a time through Codex, and continues until the queue is exhausted or a merge triggers restart.
+
+## Runtime Overview
+
+1. Load required environment variables from `.env`.
+2. Accept optional issue CLI commands (`issues ...`) for manual queue operations.
+3. Start the main issue loop (max `25` cycles per process).
+4. Select one actionable issue and run a coding cycle.
+5. If a pull request is merged, run post-merge restart workflow and exit.
+
+## Required Environment
+
+The runtime exits early if any required variable is missing:
+
+- `CONTEXT7_API_KEY`
+- `OPENAI_API_KEY`
+- `GITHUB_TOKEN`
+- `GITHUB_OWNER`
+- `GITHUB_REPO`
+
+## Startup Flow
+
+On `pnpm dev` / `pnpm start`, the runtime:
+
+1. Tries issue command handling first (`issues create|list|start|comment|complete|close`).
+2. Creates a GitHub issue manager using configured `GITHUB_OWNER` and `GITHUB_REPO`.
+3. Loads open issues from GitHub.
+4. Closes issues labeled as outdated (`outdated`, `obsolete`, `wontfix`, `invalid`, `duplicate`).
+5. Picks one issue for work:
+   - prefer an issue labeled `in progress`
+   - otherwise pick the first non-`completed` issue
+6. If no actionable issue exists:
+   - on first cycle with zero open issues, bootstrap issue templates from repository analysis
+   - otherwise replenish queue with a minimum target of `3` open tasks and a hard cap of `5` open tasks
+7. Builds the prompt from selected issue title + description and executes a Codex run.
+
+If no issue can be selected and no new issues are created, the runtime stops cleanly.
+
+## Issue Lifecycle (Single Issue)
+
+1. Select issue from open queue.
+2. Ensure `in progress` label exists.
+3. Run implementation through Codex using the issue body as task prompt.
+4. Apply the task contract: bounded change, self-review, validation, and clean commit behavior.
+5. If merge is detected, runtime transitions to post-merge restart path.
+6. Next cycle re-reads queue and continues.
+
+### Labels and States
+
+- `in progress`: current active work item.
+- `completed`: done, not selected again.
+- outdated labels: issue is auto-closed before selection.
+
+## Validation Expectations
+
+Validation should be run before accepting work in an issue cycle:
+
+```bash
+pnpm validate
+```
+
+Current validation pipeline:
+
+1. `pnpm typecheck`
+2. `pnpm build`
+3. `pnpm test`
+
+If full validation is too slow while narrowing failures, run targeted commands first (`pnpm test`, `pnpm typecheck`) then re-run `pnpm validate` before final acceptance.
+
+## Recovery Guide
+
+### GitHub Authentication / API Failure
+
+Symptoms:
+
+- startup logs include authentication failure or issue sync unavailability
+- queue operations fail
+
+Actions:
+
+1. Verify `GITHUB_TOKEN`, `GITHUB_OWNER`, and `GITHUB_REPO` in `.env`.
+2. Re-run `pnpm dev`.
+3. Confirm queue is reachable with `pnpm dev -- issues list`.
+
+### Empty Queue / No Actionable Issue
+
+Symptoms:
+
+- runtime reports no open issues or no actionable issues
+
+Actions:
+
+1. Let startup bootstrap/replenishment run automatically.
+2. If still empty, create one manually:
+
+```bash
+pnpm dev -- issues create "<title>" "<description>"
+```
+
+### Post-Merge Restart Failure
+
+Post-merge workflow runs:
+
+1. `git checkout main`
+2. `git pull --ff-only`
+3. `pnpm i`
+4. `pnpm build`
+5. detached `pnpm start`
+
+If any step fails, runtime logs the failing command and exits current cycle. Fix the reported failure, then restart manually with `pnpm dev`.
+
+## Manual Issue Commands
+
+```bash
+pnpm dev -- issues list
+pnpm dev -- issues create "<title>" "<description>"
+pnpm dev -- issues start <issueNumber>
+pnpm dev -- issues comment <issueNumber> "<comment>"
+pnpm dev -- issues complete <issueNumber> "<summary>"
+pnpm dev -- issues close <issueNumber>
+```
+
+## Development Commands
+
+```bash
+pnpm dev        # run runtime in tsx
+pnpm build      # compile to dist
+pnpm start      # run compiled runtime
+pnpm test       # run vitest
+pnpm validate   # typecheck + build + test
+```
