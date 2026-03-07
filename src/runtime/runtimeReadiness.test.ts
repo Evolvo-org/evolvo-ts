@@ -1,7 +1,7 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   getRuntimeReadinessSignalPath,
   waitForRuntimeReadinessSignal,
@@ -16,10 +16,13 @@ describe("runtimeReadiness", () => {
   const tempDirs: string[] = [];
 
   afterEach(async () => {
+    vi.useRealTimers();
     await Promise.all(tempDirs.map((directory) => rm(directory, { recursive: true, force: true })));
   });
 
   it("writes readiness signal with runtime metadata", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-03-07T23:55:00.000Z"));
     const workDir = await createTempWorkDir();
     tempDirs.push(workDir);
 
@@ -39,6 +42,7 @@ describe("runtimeReadiness", () => {
     expect(raw.status).toBe("ready");
     expect(raw.pid).toBe(process.pid);
     expect(typeof raw.startedAt).toBe("string");
+    expect(await readdir(join(workDir, ".evolvo"))).toEqual(["runtime-readiness.json"]);
   });
 
   it("waits until matching readiness token appears", async () => {
@@ -87,6 +91,38 @@ describe("runtimeReadiness", () => {
         pollIntervalMs: 10,
       }),
     ).rejects.toThrow("Last observed token=other-token");
+  });
+
+  it("ignores truncated temp-file writes until the canonical readiness signal appears", async () => {
+    const workDir = await createTempWorkDir();
+    tempDirs.push(workDir);
+    const evolvoDir = join(workDir, ".evolvo");
+    const signalPath = getRuntimeReadinessSignalPath(workDir);
+    await mkdir(evolvoDir, { recursive: true });
+    await writeFile(join(evolvoDir, "runtime-readiness.tmp-interrupted.json"), "{\"token\":\"expected-token\"", "utf8");
+
+    const waitPromise = waitForRuntimeReadinessSignal({
+      workDir,
+      token: "expected-token",
+      timeoutMs: 400,
+      pollIntervalMs: 20,
+      signalPath,
+    });
+    await new Promise((resolve) => {
+      setTimeout(resolve, 60);
+    });
+    await writeRuntimeReadinessSignal({
+      workDir,
+      token: "expected-token",
+      signalPath,
+    });
+
+    await expect(waitPromise).resolves.toEqual(
+      expect.objectContaining({
+        token: "expected-token",
+        status: "ready",
+      }),
+    );
   });
 
   it("fails when readiness file payload is malformed", async () => {
