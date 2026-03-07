@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { GitHubApiError } from "./github/githubClient.js";
 
 const runCodingAgentMock = vi.fn();
 const runIssueCommandMock = vi.fn();
@@ -27,9 +28,16 @@ vi.mock("./github/githubConfig.js", () => ({
   getGitHubConfig: getGitHubConfigMock,
 }));
 
-vi.mock("./github/githubClient.js", () => ({
-  GitHubClient: class {},
-}));
+vi.mock("./github/githubClient.js", async () => {
+  const actual = await vi.importActual<typeof import("./github/githubClient.js")>(
+    "./github/githubClient.js",
+  );
+
+  return {
+    ...actual,
+    GitHubClient: class {},
+  };
+});
 
 vi.mock("./issues/taskIssueManager.js", () => ({
   TaskIssueManager: class {
@@ -113,5 +121,20 @@ describe("main", () => {
 
     expect(runCodingAgentMock).not.toHaveBeenCalled();
     expect(console.log).toHaveBeenCalledWith(DEFAULT_PROMPT);
+  });
+
+  it("falls back cleanly when GitHub credentials are invalid", async () => {
+    listOpenIssuesMock.mockRejectedValue(
+      new GitHubApiError("GitHub API request failed (401): Bad credentials", 401, null),
+    );
+    const { DEFAULT_PROMPT, main } = await import("./main.js");
+
+    await main();
+
+    expect(console.error).toHaveBeenCalledWith(
+      "GitHub authentication failed. Check GITHUB_TOKEN and make sure it is a valid token for the configured repository.",
+    );
+    expect(console.log).toHaveBeenCalledWith(DEFAULT_PROMPT);
+    expect(runCodingAgentMock).not.toHaveBeenCalled();
   });
 });
