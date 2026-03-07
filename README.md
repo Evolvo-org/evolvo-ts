@@ -47,6 +47,34 @@ If no issue can be selected and no new issues are created, the runtime stops cle
 5. If merge is detected, runtime transitions to post-merge restart path.
 6. Next cycle re-reads queue and continues.
 
+### Canonical Runtime Lifecycle Model
+
+Canonical lifecycle state is now persisted locally in:
+
+- `.evolvo/runtime-lifecycle-state.json`
+
+Canonical states currently modeled:
+
+- `selected`
+- `executing`
+- `under_review`
+- `accepted`
+- `rejected`
+- `committed`
+- `pr_opened`
+- `merged`
+- `restarted`
+- `failed`
+- `blocked`
+
+State surfaces are separated as follows:
+
+- Canonical state: persisted transition record in `.evolvo/runtime-lifecycle-state.json`
+- Derived state: runtime snapshots such as issue open/closed state, labels, challenge typing, review/PR signals
+- Presentation state: GitHub issue comments/logs for human observability
+
+Each canonical transition also posts a GitHub issue comment titled `Canonical Lifecycle State` so timeline commentary remains visible without making comments canonical.
+
 ### Labels and States
 
 - `in progress`: current active work item.

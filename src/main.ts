@@ -35,6 +35,13 @@ import {
 } from "./challenges/challengeFailureLearning.js";
 import { persistChallengeAttemptArtifact } from "./challenges/challengeAttemptArtifacts.js";
 import type { CodingAgentRunResult, CommandExecutionSummary } from "./agents/runCodingAgent.js";
+import {
+  buildLifecycleStateComment,
+  transitionCanonicalLifecycleState,
+  type CanonicalLifecycleState,
+  type LifecycleDerivedState,
+  type LifecycleEntityKind,
+} from "./runtime/lifecycleState.js";
 
 export const DEFAULT_PROMPT = "No open issues available. Create an issue first.";
 const MAX_ISSUE_CYCLES = 100;
@@ -256,6 +263,7 @@ async function applyChallengeRetryGate(
   issueManager: TaskIssueManager,
   openIssues: IssueSummary[],
   issues: IssueSummary[],
+  cycle: number,
 ): Promise<IssueSummary[]> {
   const eligible: IssueSummary[] = [];
 
@@ -293,6 +301,15 @@ async function applyChallengeRetryGate(
     if (decision.eligible) {
       eligible.push(nextIssue);
       continue;
+    }
+
+    if (decision.reason === "max-attempts-reached") {
+      await transitionIssueLifecycleState(issueManager, {
+        issue,
+        nextState: "blocked",
+        reason: `retry gate decision: ${decision.reason}`,
+        cycle,
+      });
     }
 
     await addIssueLifecycleComment(issueManager, issue.number, buildChallengeRetryGateComment(issue, decision));
@@ -351,6 +368,66 @@ function buildIssueStartComment(issue: IssueSummary): string {
     "- Initial assessment: inspect related files, apply a focused implementation, then validate and review.",
     "- Planned lifecycle logging: inspection, implementation decisions, validation steps/results, review outcome, PR/merge status, completion summary.",
   ].join("\n");
+}
+
+function getLifecycleEntityKind(issue: IssueSummary): LifecycleEntityKind {
+  return isChallengeIssue(issue) ? "challenge" : "issue";
+}
+
+function buildLifecycleDerivedState(
+  issue: IssueSummary,
+  runResult: CodingAgentRunResult | null = null,
+): LifecycleDerivedState {
+  return {
+    issueState: issue.state,
+    labels: [...issue.labels],
+    isChallenge: isChallengeIssue(issue),
+    reviewOutcome: runResult?.summary.reviewOutcome ?? null,
+    pullRequestCreated: runResult?.summary.pullRequestCreated ?? null,
+    mergedPullRequest: runResult?.mergedPullRequest ?? null,
+  };
+}
+
+async function transitionIssueLifecycleState(
+  issueManager: TaskIssueManager,
+  options: {
+    issue: IssueSummary;
+    nextState: CanonicalLifecycleState;
+    reason: string;
+    cycle: number;
+    runResult?: CodingAgentRunResult | null;
+  },
+): Promise<void> {
+  try {
+    const transition = await transitionCanonicalLifecycleState(WORK_DIR, {
+      issueNumber: options.issue.number,
+      kind: getLifecycleEntityKind(options.issue),
+      nextState: options.nextState,
+      reason: options.reason,
+      runCycle: options.cycle,
+    });
+    if (!transition.ok || transition.entry === null) {
+      console.error(`Could not persist canonical lifecycle state for issue #${options.issue.number}: ${transition.message}`);
+      return;
+    }
+
+    const comment = buildLifecycleStateComment({
+      issueNumber: options.issue.number,
+      currentState: options.nextState,
+      previousState: transition.previousState,
+      kind: transition.entry.kind,
+      reason: options.reason,
+      derived: buildLifecycleDerivedState(options.issue, options.runResult ?? null),
+    });
+    await addIssueLifecycleComment(issueManager, options.issue.number, comment);
+  } catch (error) {
+    if (error instanceof Error) {
+      console.error(`Could not persist canonical lifecycle state for issue #${options.issue.number}: ${error.message}`);
+      return;
+    }
+
+    console.error(`Could not persist canonical lifecycle state for issue #${options.issue.number}: unknown error.`);
+  }
 }
 
 type ChallengeAttemptEvidence = {
@@ -708,7 +785,7 @@ export async function main(): Promise<void> {
           }
         }
 
-        const retryEligibleIssues = await applyChallengeRetryGate(issueManager, actionableIssues, actionableIssues);
+        const retryEligibleIssues = await applyChallengeRetryGate(issueManager, actionableIssues, actionableIssues, cycle);
         const selectedIssue = selectIssueForWork(retryEligibleIssues);
 
         if (!selectedIssue) {
@@ -753,6 +830,12 @@ export async function main(): Promise<void> {
           openCount: openIssues.length,
           selectedIssue,
         });
+        await transitionIssueLifecycleState(issueManager, {
+          issue: selectedIssue,
+          nextState: "selected",
+          reason: "issue selected for active execution in this cycle",
+          cycle,
+        });
 
         let startedThisCycle = false;
         if (!hasIssueLabel(selectedIssue, "in progress")) {
@@ -770,6 +853,12 @@ export async function main(): Promise<void> {
 
         const prompt = buildPromptFromIssue(selectedIssue);
         console.log(`Prompt: ${prompt}`);
+        await transitionIssueLifecycleState(issueManager, {
+          issue: selectedIssue,
+          nextState: "executing",
+          reason: "coding agent execution started",
+          cycle,
+        });
 
         let runError: unknown = null;
         const runResult = await runCodingAgent(prompt).catch((error) => {
@@ -779,6 +868,12 @@ export async function main(): Promise<void> {
         });
 
         if (runError) {
+          await transitionIssueLifecycleState(issueManager, {
+            issue: selectedIssue,
+            nextState: "failed",
+            reason: "runtime error during coding agent execution",
+            cycle,
+          });
           const challengeEvidence = await persistChallengeAttemptEvidence(selectedIssue, runError, runResult);
           await updateChallengeMetrics(issueManager, selectedIssue, runError, runResult);
           await addIssueLifecycleComment(
@@ -790,6 +885,38 @@ export async function main(): Promise<void> {
         }
 
         if (runResult) {
+          await transitionIssueLifecycleState(issueManager, {
+            issue: selectedIssue,
+            nextState: "under_review",
+            reason: "coding agent execution completed and review result is being processed",
+            cycle,
+            runResult,
+          });
+          await transitionIssueLifecycleState(issueManager, {
+            issue: selectedIssue,
+            nextState: runResult.summary.reviewOutcome === "accepted" ? "accepted" : "rejected",
+            reason: `review outcome received: ${runResult.summary.reviewOutcome}`,
+            cycle,
+            runResult,
+          });
+          if (runResult.summary.reviewOutcome === "accepted" && runResult.summary.pullRequestCreated) {
+            await transitionIssueLifecycleState(issueManager, {
+              issue: selectedIssue,
+              nextState: "committed",
+              reason: "commit evidence observed through pull request creation",
+              cycle,
+              runResult,
+            });
+          }
+          if (runResult.summary.pullRequestCreated) {
+            await transitionIssueLifecycleState(issueManager, {
+              issue: selectedIssue,
+              nextState: "pr_opened",
+              reason: "pull request created for this lifecycle",
+              cycle,
+              runResult,
+            });
+          }
           const challengeEvidence = await persistChallengeAttemptEvidence(selectedIssue, runError, runResult);
           await updateChallengeMetrics(issueManager, selectedIssue, runError, runResult);
           await addIssueLifecycleComment(
@@ -801,10 +928,24 @@ export async function main(): Promise<void> {
         }
 
         if (runResult?.mergedPullRequest) {
+          await transitionIssueLifecycleState(issueManager, {
+            issue: selectedIssue,
+            nextState: "merged",
+            reason: "pull request merged into main",
+            cycle,
+            runResult,
+          });
           await addIssueLifecycleComment(issueManager, selectedIssue.number, buildMergeOutcomeComment(selectedIssue));
           console.log("Merged pull request detected. Running post-merge restart workflow.");
           try {
             await runPostMergeSelfRestart(WORK_DIR);
+            await transitionIssueLifecycleState(issueManager, {
+              issue: selectedIssue,
+              nextState: "restarted",
+              reason: "post-merge restart workflow completed successfully",
+              cycle,
+              runResult,
+            });
             console.log("Post-merge restart workflow completed. Exiting current runtime.");
           } catch (error) {
             if (error instanceof Error) {
