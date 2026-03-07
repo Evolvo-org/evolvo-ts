@@ -1,26 +1,38 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const bootstrapStartupIssuesMock = vi.fn();
-const generateStartupIssueTemplatesMock = vi.fn();
-
-vi.mock("../runtime/loopUtils.js", () => ({
-  bootstrapStartupIssues: bootstrapStartupIssuesMock,
+const threadRunMock = vi.fn();
+const startThreadMock = vi.fn(() => ({
+  run: threadRunMock,
 }));
 
-vi.mock("../issues/startupIssueBootstrap.js", () => ({
-  generateStartupIssueTemplates: generateStartupIssueTemplatesMock,
+vi.mock("@openai/codex-sdk", () => ({
+  Codex: class {
+    public startThread = startThreadMock;
+  },
 }));
 
 describe("plannerAgent", () => {
   beforeEach(() => {
-    bootstrapStartupIssuesMock.mockReset();
-    generateStartupIssueTemplatesMock.mockReset();
+    startThreadMock.mockClear();
+    threadRunMock.mockReset();
   });
 
-  it("uses startup bootstrap planner path for cycle 1 empty queue", async () => {
-    bootstrapStartupIssuesMock.mockResolvedValueOnce([{ number: 11, title: "A", description: "a", state: "open", labels: [] }]);
+  it("uses Codex repo analysis and creates exact planned issues on startup", async () => {
+    threadRunMock.mockResolvedValueOnce({
+      finalResponse: JSON.stringify({
+        issues: [
+          { title: "Stabilize lifecycle transition retries", description: "Tighten lifecycle transition retry behavior." },
+          { title: "Add runtime restart readiness timeout coverage", description: "Cover delayed restart readiness failures." },
+        ],
+      }),
+    });
+    const createPlannedIssuesMock = vi.fn().mockResolvedValueOnce({
+      created: [{ number: 11, title: "Stabilize lifecycle transition retries", description: "Tighten lifecycle transition retry behavior.", state: "open", labels: [] }],
+    });
     const issueManager = {
-      replenishSelfImprovementIssues: vi.fn(),
+      listOpenIssues: vi.fn().mockResolvedValueOnce([]),
+      listRecentClosedIssues: vi.fn().mockResolvedValueOnce([]),
+      createPlannedIssues: createPlannedIssuesMock,
     } as unknown as import("../issues/taskIssueManager.js").TaskIssueManager;
     const { runPlannerAgent } = await import("./plannerAgent.js");
 
@@ -34,25 +46,44 @@ describe("plannerAgent", () => {
     });
 
     expect(result.startupBootstrap).toBe(true);
-    expect(result.created).toEqual([{ number: 11, title: "A", description: "a", state: "open", labels: [] }]);
-    expect(bootstrapStartupIssuesMock).toHaveBeenCalledWith(issueManager, "/tmp/evolvo");
-    expect(generateStartupIssueTemplatesMock).not.toHaveBeenCalled();
+    expect(startThreadMock).toHaveBeenCalledWith(expect.objectContaining({
+      workingDirectory: "/tmp/evolvo",
+      sandboxMode: "read-only",
+      approvalPolicy: "never",
+      networkAccessEnabled: false,
+    }));
+    expect(createPlannedIssuesMock).toHaveBeenCalledWith({
+      minimumIssueCount: 3,
+      maximumOpenIssues: 5,
+      issues: [
+        { title: "Stabilize lifecycle transition retries", description: "Tighten lifecycle transition retry behavior." },
+        { title: "Add runtime restart readiness timeout coverage", description: "Cover delayed restart readiness failures." },
+      ],
+    });
+    expect(result.created).toEqual([
+      { number: 11, title: "Stabilize lifecycle transition retries", description: "Tighten lifecycle transition retry behavior.", state: "open", labels: [] },
+    ]);
   });
 
-  it("uses repository analysis templates for non-startup planner replenishment", async () => {
-    generateStartupIssueTemplatesMock.mockResolvedValueOnce([
-      { title: "Planned A", description: "A" },
-      { title: "Planned B", description: "B" },
-    ]);
-    const replenishMock = vi.fn().mockResolvedValueOnce({
-      created: [{ number: 21, title: "Planned A", description: "A", state: "open", labels: [] }],
+  it("deduplicates repeated planner titles before creating issues", async () => {
+    threadRunMock.mockResolvedValueOnce({
+      finalResponse: JSON.stringify({
+        issues: [
+          { title: "Harden planner duplicate filtering", description: "Use recent issue history to prevent repeats." },
+          { title: "Harden planner duplicate filtering", description: "This duplicate should be ignored." },
+          { title: "Improve Codex planner diagnostics", description: "Capture planner failures with clearer logs." },
+        ],
+      }),
     });
+    const createPlannedIssuesMock = vi.fn().mockResolvedValueOnce({ created: [] });
     const issueManager = {
-      replenishSelfImprovementIssues: replenishMock,
+      listOpenIssues: vi.fn().mockResolvedValueOnce([]),
+      listRecentClosedIssues: vi.fn().mockResolvedValueOnce([]),
+      createPlannedIssues: createPlannedIssuesMock,
     } as unknown as import("../issues/taskIssueManager.js").TaskIssueManager;
     const { runPlannerAgent } = await import("./plannerAgent.js");
 
-    const result = await runPlannerAgent({
+    await runPlannerAgent({
       cycle: 2,
       openIssueCount: 0,
       minimumIssueCount: 3,
@@ -61,26 +92,23 @@ describe("plannerAgent", () => {
       workDir: "/tmp/evolvo",
     });
 
-    expect(result.startupBootstrap).toBe(false);
-    expect(generateStartupIssueTemplatesMock).toHaveBeenCalledWith("/tmp/evolvo", { targetCount: 3 });
-    expect(replenishMock).toHaveBeenCalledWith({
+    expect(createPlannedIssuesMock).toHaveBeenCalledWith({
       minimumIssueCount: 3,
       maximumOpenIssues: 5,
-      templates: [
-        { title: "Planned A", description: "A" },
-        { title: "Planned B", description: "B" },
+      issues: [
+        { title: "Harden planner duplicate filtering", description: "Use recent issue history to prevent repeats." },
+        { title: "Improve Codex planner diagnostics", description: "Capture planner failures with clearer logs." },
       ],
     });
-    expect(result.created).toEqual([{ number: 21, title: "Planned A", description: "A", state: "open", labels: [] }]);
   });
 
-  it("passes an empty candidate set when repository analysis fails", async () => {
-    generateStartupIssueTemplatesMock.mockRejectedValueOnce(new Error("analysis failed"));
-    const replenishMock = vi.fn().mockResolvedValueOnce({
-      created: [{ number: 22, title: "Fallback", description: "B", state: "open", labels: [] }],
-    });
+  it("returns no created issues when planner analysis fails", async () => {
+    threadRunMock.mockRejectedValueOnce(new Error("planner failed"));
+    const createPlannedIssuesMock = vi.fn();
     const issueManager = {
-      replenishSelfImprovementIssues: replenishMock,
+      listOpenIssues: vi.fn().mockResolvedValueOnce([]),
+      listRecentClosedIssues: vi.fn().mockResolvedValueOnce([]),
+      createPlannedIssues: createPlannedIssuesMock,
     } as unknown as import("../issues/taskIssueManager.js").TaskIssueManager;
     const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
     const { runPlannerAgent } = await import("./plannerAgent.js");
@@ -94,12 +122,8 @@ describe("plannerAgent", () => {
       workDir: "/tmp/evolvo",
     });
 
-    expect(errorSpy).toHaveBeenCalledWith("Queue repository analysis failed during replenishment planning: analysis failed");
-    expect(replenishMock).toHaveBeenCalledWith({
-      minimumIssueCount: 3,
-      maximumOpenIssues: 5,
-      templates: [],
-    });
-    expect(result.created).toEqual([{ number: 22, title: "Fallback", description: "B", state: "open", labels: [] }]);
+    expect(errorSpy).toHaveBeenCalledWith("Queue repository analysis failed during replenishment planning: planner failed");
+    expect(createPlannedIssuesMock).not.toHaveBeenCalled();
+    expect(result).toEqual({ created: [], startupBootstrap: false });
   });
 });

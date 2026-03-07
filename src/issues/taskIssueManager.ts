@@ -40,6 +40,11 @@ export type ReplenishIssuesResult = {
   created: IssueSummary[];
 };
 
+export type PlannedIssueDraft = {
+  title: string;
+  description: string;
+};
+
 export type UpdateIssueLabelsOptions = {
   add?: string[];
   remove?: string[];
@@ -319,6 +324,65 @@ export class TaskIssueManager {
     }
 
     return issues.filter((issue) => issue.pull_request === undefined).map(formatIssue);
+  }
+
+  public async listRecentClosedIssues(limit = TaskIssueManager.ISSUES_PER_PAGE): Promise<IssueSummary[]> {
+    const perPage = Math.max(1, Math.min(TaskIssueManager.ISSUES_PER_PAGE, Math.floor(limit)));
+    const issues = await this.client.get<GitHubIssue[]>(
+      `?state=closed&sort=updated&direction=desc&per_page=${perPage}&page=1`,
+    );
+    return issues.filter((issue) => issue.pull_request === undefined).map(formatIssue);
+  }
+
+  public async createPlannedIssues(options: {
+    minimumIssueCount: number;
+    maximumOpenIssues: number;
+    issues: PlannedIssueDraft[];
+  }): Promise<ReplenishIssuesResult> {
+    const minimumIssueCount = Math.max(0, Math.floor(options.minimumIssueCount));
+    const maximumOpenIssues = Math.max(0, Math.floor(options.maximumOpenIssues));
+    const plannedIssues = options.issues;
+
+    if (minimumIssueCount === 0 || maximumOpenIssues === 0 || plannedIssues.length === 0) {
+      return { created: [] };
+    }
+
+    const openIssues = await this.listOpenIssues();
+    const remainingOpenSlots = maximumOpenIssues - openIssues.length;
+    if (remainingOpenSlots <= 0) {
+      return { created: [] };
+    }
+
+    const recentClosed = await this.listRecentClosedIssues();
+    const existingTitles = new Set(
+      [...openIssues.map((issue) => issue.title), ...recentClosed.map((issue) => issue.title)].map((title) =>
+        title.trim().toLowerCase()
+      ),
+    );
+
+    const created: IssueSummary[] = [];
+    const toCreateCount = Math.min(remainingOpenSlots, minimumIssueCount);
+
+    for (const plannedIssue of plannedIssues) {
+      if (created.length >= toCreateCount) {
+        break;
+      }
+
+      const title = plannedIssue.title.trim();
+      const description = plannedIssue.description.trim();
+      const normalizedTitle = title.toLowerCase();
+      if (!title || existingTitles.has(normalizedTitle)) {
+        continue;
+      }
+
+      const result = await this.createIssue(title, description);
+      if (result.ok && result.issue) {
+        created.push(result.issue);
+        existingTitles.add(normalizedTitle);
+      }
+    }
+
+    return { created };
   }
 
   public async replenishSelfImprovementIssues(options: ReplenishIssuesOptions): Promise<ReplenishIssuesResult> {

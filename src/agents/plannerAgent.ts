@@ -1,6 +1,5 @@
-import type { IssueSummary, TaskIssueManager } from "../issues/taskIssueManager.js";
-import { generateStartupIssueTemplates } from "../issues/startupIssueBootstrap.js";
-import { bootstrapStartupIssues } from "../runtime/loopUtils.js";
+import { Codex, type ThreadOptions } from "@openai/codex-sdk";
+import type { IssueSummary, PlannedIssueDraft, TaskIssueManager } from "../issues/taskIssueManager.js";
 
 export type PlannerAgentInput = {
   cycle: number;
@@ -16,43 +15,140 @@ export type PlannerAgentResult = {
   startupBootstrap: boolean;
 };
 
-export async function runPlannerAgent(input: PlannerAgentInput): Promise<PlannerAgentResult> {
-  const startupBootstrap = input.cycle === 1 && input.openIssueCount === 0;
-  if (startupBootstrap) {
-    return {
-      created: await bootstrapStartupIssues(input.issueManager, input.workDir),
-      startupBootstrap: true,
-    };
+const codex = new Codex();
+
+const PLANNER_THREAD_OPTIONS: Omit<ThreadOptions, "workingDirectory"> = {
+  sandboxMode: "read-only",
+  approvalPolicy: "never",
+  modelReasoningEffort: "medium",
+  networkAccessEnabled: false,
+};
+
+const PLANNER_OUTPUT_SCHEMA = {
+  type: "object",
+  properties: {
+    issues: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          title: { type: "string" },
+          description: { type: "string" },
+        },
+        required: ["title", "description"],
+        additionalProperties: false,
+      },
+    },
+  },
+  required: ["issues"],
+  additionalProperties: false,
+} as const;
+
+type PlannerResponse = {
+  issues: PlannedIssueDraft[];
+};
+
+function normalizeTitle(title: string): string {
+  return title.trim().toLowerCase();
+}
+
+function dedupePlannedIssues(issues: PlannedIssueDraft[]): PlannedIssueDraft[] {
+  const seen = new Set<string>();
+  const unique: PlannedIssueDraft[] = [];
+
+  for (const issue of issues) {
+    const title = issue.title.trim();
+    const description = issue.description.trim();
+    const key = normalizeTitle(title);
+    if (!title || !description || seen.has(key)) {
+      continue;
+    }
+
+    seen.add(key);
+    unique.push({ title, description });
   }
 
-  let plannerTemplates:
-    | Array<{
-      title: string;
-      description: string;
-    }>
-    | undefined;
+  return unique;
+}
+
+function parsePlannerResponse(finalResponse: string): PlannedIssueDraft[] {
+  const parsed = JSON.parse(finalResponse) as PlannerResponse;
+  if (!parsed || typeof parsed !== "object" || !Array.isArray(parsed.issues)) {
+    throw new Error("Planner response did not contain an issues array.");
+  }
+
+  return dedupePlannedIssues(parsed.issues);
+}
+
+function formatIssueListForPrompt(issues: IssueSummary[]): string {
+  if (issues.length === 0) {
+    return "- none";
+  }
+
+  return issues
+    .map((issue) => `- #${issue.number} ${issue.title}`)
+    .join("\n");
+}
+
+function buildPlannerPrompt(input: PlannerAgentInput, openIssues: IssueSummary[], recentClosedIssues: IssueSummary[]): string {
+  return [
+    "Inspect this repository and propose new GitHub issues for Evolvo.",
+    "",
+    "Requirements:",
+    `- Return at most ${input.minimumIssueCount} issues.`,
+    "- Each issue must be a small, concrete, repo-specific self-improvement task.",
+    "- Base proposals on actual repository evidence, not canned templates.",
+    "- Do not create follow-up titles.",
+    "- Do not repeat or lightly reword existing open or recently closed issues.",
+    "- Prefer reliability, runtime safety, validation quality, planning quality, and operational robustness.",
+    "",
+    "Current open issues:",
+    formatIssueListForPrompt(openIssues),
+    "",
+    "Recently closed issues:",
+    formatIssueListForPrompt(recentClosedIssues.slice(0, 25)),
+    "",
+    "Return only structured JSON matching the schema.",
+  ].join("\n");
+}
+
+export async function runPlannerAgent(input: PlannerAgentInput): Promise<PlannerAgentResult> {
+  const startupBootstrap = input.cycle === 1 && input.openIssueCount === 0;
+
   try {
-    plannerTemplates = await generateStartupIssueTemplates(input.workDir, {
-      targetCount: input.minimumIssueCount,
+    const openIssues = await input.issueManager.listOpenIssues();
+    const recentClosedIssues = await input.issueManager.listRecentClosedIssues();
+    const thread = codex.startThread({
+      ...PLANNER_THREAD_OPTIONS,
+      workingDirectory: input.workDir,
     });
+    const plannerPrompt = buildPlannerPrompt(input, openIssues, recentClosedIssues);
+    const turn = await thread.run(plannerPrompt, {
+      outputSchema: PLANNER_OUTPUT_SCHEMA,
+    });
+    const plannedIssues = parsePlannerResponse(turn.finalResponse);
+    const created = (
+      await input.issueManager.createPlannedIssues({
+        minimumIssueCount: input.minimumIssueCount,
+        maximumOpenIssues: input.maximumOpenIssues,
+        issues: plannedIssues,
+      })
+    ).created;
+
+    return {
+      created,
+      startupBootstrap,
+    };
   } catch (error) {
     if (error instanceof Error) {
       console.error(`Queue repository analysis failed during replenishment planning: ${error.message}`);
     } else {
       console.error("Queue repository analysis failed during replenishment planning with an unknown error.");
     }
+
+    return {
+      created: [],
+      startupBootstrap,
+    };
   }
-
-  const created = (
-    await input.issueManager.replenishSelfImprovementIssues({
-      minimumIssueCount: input.minimumIssueCount,
-      maximumOpenIssues: input.maximumOpenIssues,
-      templates: plannerTemplates ?? [],
-    })
-  ).created;
-
-  return {
-    created,
-    startupBootstrap: false,
-  };
 }

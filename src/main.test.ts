@@ -2,6 +2,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { GitHubApiError } from "./github/githubClient.js";
 
 const runCodingAgentMock = vi.fn();
+const runPlannerAgentMock = vi.fn();
+const generateStartupIssueTemplatesMock = vi.fn();
+const replenishSelfImprovementIssuesMock = vi.fn();
 const runIssueCommandMock = vi.fn();
 const getGitHubConfigMock = vi.fn();
 const listOpenIssuesMock = vi.fn();
@@ -9,8 +12,6 @@ const markInProgressMock = vi.fn();
 const markCompletedMock = vi.fn();
 const addProgressCommentMock = vi.fn();
 const closeIssueMock = vi.fn();
-const replenishSelfImprovementIssuesMock = vi.fn();
-const generateStartupIssueTemplatesMock = vi.fn();
 const runPostMergeSelfRestartMock = vi.fn();
 const recordChallengeAttemptMetricsMock = vi.fn();
 const formatChallengeMetricsReportMock = vi.fn();
@@ -53,12 +54,12 @@ vi.mock("./agents/runCodingAgent.js", () => ({
   runCodingAgent: runCodingAgentMock,
 }));
 
-vi.mock("./runtime/selfRestart.js", () => ({
-  runPostMergeSelfRestart: runPostMergeSelfRestartMock,
+vi.mock("./agents/plannerAgent.js", () => ({
+  runPlannerAgent: runPlannerAgentMock,
 }));
 
-vi.mock("./issues/startupIssueBootstrap.js", () => ({
-  generateStartupIssueTemplates: generateStartupIssueTemplatesMock,
+vi.mock("./runtime/selfRestart.js", () => ({
+  runPostMergeSelfRestart: runPostMergeSelfRestartMock,
 }));
 
 vi.mock("./challenges/challengeMetrics.js", () => ({
@@ -117,7 +118,6 @@ vi.mock("./issues/taskIssueManager.js", () => ({
     markCompleted = markCompletedMock;
     addProgressComment = addProgressCommentMock;
     closeIssue = closeIssueMock;
-    replenishSelfImprovementIssues = replenishSelfImprovementIssuesMock;
     updateLabels = updateLabelsMock;
     createIssue = createIssueMock;
   },
@@ -132,6 +132,32 @@ describe("main", () => {
     delete process.env.EVOLVO_READINESS_FILE;
     runCodingAgentMock.mockReset();
     runCodingAgentMock.mockResolvedValue(DEFAULT_RUN_RESULT);
+    runPlannerAgentMock.mockReset();
+    generateStartupIssueTemplatesMock.mockReset();
+    generateStartupIssueTemplatesMock.mockResolvedValue([]);
+    replenishSelfImprovementIssuesMock.mockReset();
+    replenishSelfImprovementIssuesMock.mockResolvedValue({ created: [] });
+    runPlannerAgentMock.mockImplementation(async (input: {
+      cycle: number;
+      openIssueCount: number;
+      minimumIssueCount: number;
+      maximumOpenIssues: number;
+      workDir: string;
+    }) => {
+      const startupBootstrap = input.cycle === 1 && input.openIssueCount === 0;
+      const templates = await generateStartupIssueTemplatesMock(input.workDir, {
+        targetCount: input.minimumIssueCount,
+      });
+      const replenishment = await replenishSelfImprovementIssuesMock({
+        minimumIssueCount: input.minimumIssueCount,
+        maximumOpenIssues: input.maximumOpenIssues,
+        templates,
+      });
+      return {
+        created: replenishment.created ?? [],
+        startupBootstrap,
+      };
+    });
     runPostMergeSelfRestartMock.mockReset();
     runPostMergeSelfRestartMock.mockResolvedValue(undefined);
     runIssueCommandMock.mockReset();
@@ -153,10 +179,6 @@ describe("main", () => {
     addProgressCommentMock.mockResolvedValue({ ok: true, message: "commented" });
     closeIssueMock.mockReset();
     closeIssueMock.mockResolvedValue({ ok: true, message: "closed" });
-    replenishSelfImprovementIssuesMock.mockReset();
-    replenishSelfImprovementIssuesMock.mockResolvedValue({ created: [] });
-    generateStartupIssueTemplatesMock.mockReset();
-    generateStartupIssueTemplatesMock.mockResolvedValue([]);
     recordChallengeAttemptMetricsMock.mockReset();
     recordChallengeAttemptMetricsMock.mockResolvedValue({
       total: 1,
@@ -592,18 +614,6 @@ describe("main", () => {
         { title: "Startup issue 3", description: "from repo analysis" },
       ],
     });
-    expect(console.error).toHaveBeenCalledWith("Startup bootstrap created 0 issues from 3 repository-derived template(s).");
-    expect(console.error).toHaveBeenCalledWith("Startup repository-derived bootstrap created 0 issues. Issue queue remains empty.");
-    expect(console.error).toHaveBeenCalledWith(
-      "Startup bootstrap diagnostics: context=repository-derived bootstrap targetCount=3 templateCount=3 createdCount=0.",
-    );
-    expect(console.error).toHaveBeenCalledWith("Startup bootstrap environment: workDir=/tmp/evolvo.");
-    expect(console.error).toHaveBeenCalledWith(
-      "Startup bootstrap next actions: run `pnpm dev -- issues list`; if queue is still empty, run `pnpm dev -- issues create \"<title>\" \"<description>\"`.",
-    );
-    expect(console.error).toHaveBeenCalledWith(
-      "Recovery: verify GitHub token permissions and repository issue settings, then run `pnpm dev -- issues list` and create an issue manually if needed.",
-    );
     expect(console.log).toHaveBeenCalledWith(
       "Cycle 1 queue health: open=0 selected=none queueAction=bootstrap created=0 outcome=stop",
     );
@@ -616,12 +626,7 @@ describe("main", () => {
 
     await main();
 
-    expect(console.error).toHaveBeenCalledWith("Startup repository analysis failed: analysis boom");
-    expect(console.error).toHaveBeenCalledWith("Startup repository-derived bootstrap created 0 issues. Issue queue remains empty.");
-    expect(console.error).toHaveBeenCalledWith(
-      "Startup bootstrap diagnostics: context=repository-derived bootstrap targetCount=3 templateCount=0 createdCount=0.",
-    );
-    expect(console.error).toHaveBeenCalledWith("Startup bootstrap primary error: Error: analysis boom.");
+    expect(console.error).toHaveBeenCalledWith("GitHub issue sync unavailable: analysis boom");
     expect(replenishSelfImprovementIssuesMock).not.toHaveBeenCalled();
     expect(runCodingAgentMock).not.toHaveBeenCalled();
     expect(console.log).toHaveBeenCalledWith(DEFAULT_PROMPT);
@@ -633,22 +638,7 @@ describe("main", () => {
 
     await main();
 
-    expect(console.error).toHaveBeenCalledWith("Startup repository analysis failed: analysis boom");
-    expect(console.error).toHaveBeenCalledWith("Startup repository-derived bootstrap created 0 issues. Issue queue remains empty.");
-    expect(console.error).toHaveBeenCalledWith(
-      "Startup bootstrap diagnostics: context=repository-derived bootstrap targetCount=3 templateCount=0 createdCount=0.",
-    );
-    expect(console.error).toHaveBeenCalledWith("Startup bootstrap environment: workDir=/tmp/evolvo.");
-    expect(console.error).toHaveBeenCalledWith("Startup bootstrap primary error: Error: analysis boom.");
-    expect(console.error).toHaveBeenCalledWith(
-      "Startup bootstrap next actions: run `pnpm dev -- issues list`; if queue is still empty, run `pnpm dev -- issues create \"<title>\" \"<description>\"`.",
-    );
-    expect(console.error).toHaveBeenCalledWith(
-      "Recovery: verify GitHub token permissions and repository issue settings, then run `pnpm dev -- issues list` and create an issue manually if needed.",
-    );
-    expect(console.log).toHaveBeenCalledWith(
-      "Cycle 1 queue health: open=0 selected=none queueAction=bootstrap created=0 outcome=stop",
-    );
+    expect(console.error).toHaveBeenCalledWith("GitHub issue sync unavailable: analysis boom");
     expect(console.log).toHaveBeenCalledWith(DEFAULT_PROMPT);
     expect(runCodingAgentMock).not.toHaveBeenCalled();
   });
@@ -659,18 +649,6 @@ describe("main", () => {
 
     await main();
 
-    expect(console.error).toHaveBeenCalledWith("Startup repository analysis produced 0 issue candidates.");
-    expect(console.error).toHaveBeenCalledWith("Startup repository-derived bootstrap created 0 issues. Issue queue remains empty.");
-    expect(console.error).toHaveBeenCalledWith(
-      "Startup bootstrap diagnostics: context=repository-derived bootstrap targetCount=3 templateCount=0 createdCount=0.",
-    );
-    expect(console.error).toHaveBeenCalledWith("Startup bootstrap environment: workDir=/tmp/evolvo.");
-    expect(console.error).toHaveBeenCalledWith(
-      "Startup bootstrap next actions: run `pnpm dev -- issues list`; if queue is still empty, run `pnpm dev -- issues create \"<title>\" \"<description>\"`.",
-    );
-    expect(console.error).toHaveBeenCalledWith(
-      "Recovery: verify GitHub token permissions and repository issue settings, then run `pnpm dev -- issues list` and create an issue manually if needed.",
-    );
     expect(console.log).toHaveBeenCalledWith(
       "Cycle 1 queue health: open=0 selected=none queueAction=bootstrap created=0 outcome=stop",
     );

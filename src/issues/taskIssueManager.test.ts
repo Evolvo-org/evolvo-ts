@@ -103,6 +103,53 @@ describe("TaskIssueManager", () => {
     ]);
   });
 
+  it("lists recent closed issues and excludes pull requests", async () => {
+    const client = createClientMock();
+    client.get.mockResolvedValue([
+      createIssue({ number: 11, state: "closed" }),
+      createIssue({ number: 12, state: "closed", pull_request: { url: "pr" } }),
+    ]);
+    const manager = new TaskIssueManager(client as never);
+
+    const result = await manager.listRecentClosedIssues();
+
+    expect(client.get).toHaveBeenCalledWith("?state=closed&sort=updated&direction=desc&per_page=100&page=1");
+    expect(result).toEqual([
+      {
+        number: 11,
+        title: "Issue",
+        description: "Description",
+        state: "closed",
+        labels: [],
+      },
+    ]);
+  });
+
+  it("creates planned issues without generating follow-up titles", async () => {
+    const client = createClientMock();
+    client.get
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([
+        createIssue({ number: 4, state: "closed", title: "Candidate A" }),
+      ]);
+    client.post.mockResolvedValueOnce(createIssue({ number: 31, title: "Candidate B" }));
+    const manager = new TaskIssueManager(client as never);
+
+    const result = await manager.createPlannedIssues({
+      minimumIssueCount: 3,
+      maximumOpenIssues: 4,
+      issues: [
+        { title: "Candidate A", description: "A" },
+        { title: "Candidate B", description: "B" },
+      ],
+    });
+
+    expect(result.created).toHaveLength(1);
+    expect(result.created[0]?.title).toBe("Candidate B");
+    expect(client.post).toHaveBeenCalledTimes(1);
+    expect(client.post).toHaveBeenCalledWith("", expect.objectContaining({ title: "Candidate B" }));
+  });
+
   it("replenishes empty queue with provided repository-derived candidates", async () => {
     const client = createClientMock();
     client.get
