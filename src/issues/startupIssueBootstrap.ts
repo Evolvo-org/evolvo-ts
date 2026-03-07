@@ -1,5 +1,7 @@
 import { promises as fs } from "node:fs";
+import { execFile } from "node:child_process";
 import { join, relative } from "node:path";
+import { promisify } from "node:util";
 
 export type IssueTemplate = {
   title: string;
@@ -10,6 +12,7 @@ type PackageJsonShape = {
   scripts?: Record<string, string>;
 };
 const IGNORED_SCAN_DIRECTORIES = new Set([".git", "node_modules", "dist", "build", "coverage", ".turbo"]);
+const execFileAsync = promisify(execFile);
 
 async function pathExists(path: string): Promise<boolean> {
   try {
@@ -54,6 +57,20 @@ async function listTypeScriptFiles(root: string): Promise<string[]> {
   }
 
   return files;
+}
+
+async function listTrackedTypeScriptFiles(repoRoot: string): Promise<string[] | null> {
+  try {
+    const { stdout } = await execFileAsync("git", ["-C", repoRoot, "ls-files", "*.ts", "*.tsx"]);
+    const files = stdout
+      .split("\n")
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .map((relativePath) => join(repoRoot, relativePath));
+    return files;
+  } catch {
+    return null;
+  }
 }
 
 function uniqueByTitle(templates: IssueTemplate[]): IssueTemplate[] {
@@ -102,7 +119,8 @@ export async function generateStartupIssueTemplates(
     });
   }
 
-  const allTypeScriptFiles = await listTypeScriptFiles(repoRoot);
+  const trackedTypeScriptFiles = await listTrackedTypeScriptFiles(repoRoot);
+  const allTypeScriptFiles = trackedTypeScriptFiles ?? (await listTypeScriptFiles(repoRoot));
   const sourceFiles = allTypeScriptFiles
     .filter((filePath) => !filePath.endsWith(".d.ts"))
     .filter((filePath) => !/(\.test|\.spec)\.tsx?$/u.test(filePath))

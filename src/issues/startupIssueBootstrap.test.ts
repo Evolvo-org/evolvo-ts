@@ -2,9 +2,12 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { chmod, mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { generateStartupIssueTemplates } from "./startupIssueBootstrap.js";
 
 const tempDirs: string[] = [];
+const execFileAsync = promisify(execFile);
 
 async function createTempRepo(): Promise<string> {
   const directory = await mkdtemp(join(tmpdir(), "evolvo-startup-bootstrap-"));
@@ -120,5 +123,34 @@ describe("generateStartupIssueTemplates", () => {
     const templates = await generateStartupIssueTemplates(repoRoot, { targetCount: 3 });
 
     expect(templates).toEqual([]);
+  });
+
+  it("prefers git-tracked files and ignores unrelated untracked directories", async () => {
+    const repoRoot = await createTempRepo();
+    await execFileAsync("git", ["init", "-q", repoRoot]);
+    await mkdir(join(repoRoot, "src"), { recursive: true });
+    await mkdir(join(repoRoot, "scratch"), { recursive: true });
+
+    await writeFile(
+      join(repoRoot, "package.json"),
+      JSON.stringify(
+        {
+          name: "repo",
+          scripts: {
+            typecheck: "tsc --noEmit",
+          },
+        },
+        null,
+        2,
+      ),
+    );
+    await mkdir(join(repoRoot, ".github", "workflows"), { recursive: true });
+    await writeFile(join(repoRoot, "README.md"), "This readme is intentionally long enough to skip docs bootstrap.".repeat(4));
+    await writeFile(join(repoRoot, "src", "tracked.ts"), "export const tracked = 1;\n");
+    await writeFile(join(repoRoot, "scratch", "untracked.ts"), "export const untracked = 1;\n");
+    await execFileAsync("git", ["-C", repoRoot, "add", "src/tracked.ts", "package.json", "README.md"]);
+
+    const templates = await generateStartupIssueTemplates(repoRoot, { targetCount: 3 });
+    expect(templates.map((template) => template.title)).toEqual(["Add regression tests for src/tracked.ts"]);
   });
 });
