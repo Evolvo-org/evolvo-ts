@@ -34,6 +34,7 @@ describe("environment", () => {
   });
 
   it("throws when a required environment variable is missing", async () => {
+    vi.stubEnv("CONTEXT7_API_KEY", "");
     vi.stubEnv("OPENAI_API_KEY", "openai");
     vi.stubEnv("GITHUB_TOKEN", "github-token");
     vi.stubEnv("GITHUB_OWNER", "owner");
