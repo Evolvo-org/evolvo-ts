@@ -310,13 +310,73 @@ function parseGracefulShutdownCommand(
   return null;
 }
 
-function parseStartProjectName(content: string): string | null {
+type ParsedStartProjectRequest =
+  | {
+    ok: true;
+    mode: "existing" | "new";
+    projectName: string;
+  }
+  | {
+    ok: false;
+    message: string;
+    projectName: string | null;
+  };
+
+function parseStartProjectRequest(content: string): ParsedStartProjectRequest | null {
   const match = content.match(/^startproject(?:\s+(.+))?$/i);
   if (!match) {
     return null;
   }
 
-  return match[1]?.trim() ?? "";
+  const suffix = match[1]?.trim() ?? "";
+  if (!suffix) {
+    return {
+      ok: false,
+      message: "`startProject` requires an explicit path (`existing` or `new`).",
+      projectName: null,
+    };
+  }
+
+  const [rawPath, ...restTokens] = suffix.split(/\s+/);
+  const projectName = restTokens.join(" ").trim();
+  const path = rawPath.toLowerCase();
+  if (path === "existing") {
+    if (!projectName) {
+      return {
+        ok: false,
+        message: "`startProject existing` requires a registered project target.",
+        projectName: null,
+      };
+    }
+
+    return {
+      ok: true,
+      mode: "existing",
+      projectName,
+    };
+  }
+
+  if (path === "new") {
+    if (!projectName) {
+      return {
+        ok: false,
+        message: "`startProject new` requires a project name.",
+        projectName: null,
+      };
+    }
+
+    return {
+      ok: true,
+      mode: "new",
+      projectName,
+    };
+  }
+
+  return {
+    ok: false,
+    message: "`startProject` requires an explicit path (`existing` or `new`).",
+    projectName: suffix,
+  };
 }
 
 function parseStopProjectCommand(content: string): string | null {
@@ -332,58 +392,53 @@ function parseStatusCommand(content: string): boolean {
   return content.trim().toLowerCase() === "status";
 }
 
-function normalizeStopProjectNameInput(input: string): { displayName: string; slug: string } {
-  const trimmed = input.trim();
-  if (trimmed.toLowerCase() === "evolvo") {
-    return {
-      displayName: "Evolvo",
-      slug: "evolvo",
-    };
-  }
-
-  const normalized = normalizeProjectNameInput(trimmed);
-  return {
-    displayName: normalized.displayName,
-    slug: normalized.slug,
-  };
-}
-
 function parseStopProjectRequestSuffix(
   suffix: string,
 ): { ok: true; projectName: string; mode: "now" | "when-project-complete" } | { ok: false; message: string } {
   const trimmed = suffix.trim();
-  const compact = trimmed.replace(/\s+/g, "").toLowerCase();
   if (trimmed.length === 0) {
     return {
       ok: false,
-      message: "`stopProject` requires a project name.",
+      message: "`stopProject` requires a registered project target.",
     };
   }
 
-  if (compact === "now" || compact === "whenprojectcomplete") {
+  const parts = trimmed.split(/\s+/);
+  if (parts.length < 2) {
+    const singleToken = parts[0]?.toLowerCase() ?? "";
+    if (singleToken === "now" || singleToken === "whencomplete") {
+      return {
+        ok: false,
+        message: "`stopProject` requires a registered project target.",
+      };
+    }
+
     return {
       ok: false,
-      message: "`stopProject` requires a project name.",
+      message: "`stopProject` requires an explicit mode. Supported values are `now` and `whenComplete`.",
     };
   }
 
-  const whenCompletePattern = /\s+whenprojectcomplete$/i;
-  const whenCompleteAliasPattern = /\s+whencomplete$/i;
-  const mode: "now" | "when-project-complete" = whenCompletePattern.test(trimmed) || whenCompleteAliasPattern.test(trimmed)
-    ? "when-project-complete"
-    : "now";
-  const projectName = trimmed.replace(whenCompletePattern, "").replace(whenCompleteAliasPattern, "").trim();
+  const rawMode = parts.at(-1)?.toLowerCase() ?? "";
+  if (rawMode !== "now" && rawMode !== "whencomplete") {
+    return {
+      ok: false,
+      message: `Invalid stop mode \`${parts.at(-1) ?? ""}\`. Supported values are \`now\` and \`whenComplete\`.`,
+    };
+  }
+
+  const projectName = parts.slice(0, -1).join(" ").trim();
   if (!projectName) {
     return {
       ok: false,
-      message: "`stopProject` requires a project name.",
+      message: "`stopProject` requires a registered project target.",
     };
   }
 
   return {
     ok: true,
     projectName,
-    mode,
+    mode: rawMode === "whencomplete" ? "when-project-complete" : "now",
   };
 }
 
@@ -450,6 +505,27 @@ function findRegisteredProjectBySlug(
   }
 
   return projects.find((project) => project.slug === normalized) ?? null;
+}
+
+function findRegisteredProjectByInput(
+  projects: RegisteredProjectOption[],
+  input: string,
+): RegisteredProjectOption | null {
+  const normalized = input.trim();
+  if (!normalized) {
+    return null;
+  }
+
+  const normalizedLowerCase = normalized.toLowerCase();
+  const exactMatch = projects.find((project) =>
+    project.slug.toLowerCase() === normalizedLowerCase || project.displayName.toLowerCase() === normalizedLowerCase
+  );
+  if (exactMatch) {
+    return exactMatch;
+  }
+
+  const normalizedProjectName = normalizeProjectNameInput(normalized);
+  return projects.find((project) => project.slug === normalizedProjectName.slug) ?? null;
 }
 
 function buildAuthHeaders(config: DiscordControlConfig): Record<string, string> {
@@ -695,7 +771,7 @@ function buildStartupBootMessageContent(): string {
     "🤖 Evolvo runtime booted.",
     "Operator control is online in plain-text mode, and the live bot session will register slash commands when it connects.",
     "Slash commands: `/status`, `/quit`, `/startproject existing project:<registered-project>`, `/startproject new name:<project-name>`, `/stopproject project:<registered-project> mode:now|whenComplete`.",
-    "Plain-text fallback: `status`, `quit after current task`, `quit after tasks`, `startProject <project-name>`, `stopProject <project-name>`, `stopProject <project-name> whenProjectComplete`.",
+    "Plain-text fallback: `status`, `quit after current task`, `quit after tasks`, `startProject existing <registered-project>`, `startProject new <project-name>`, `stopProject <registered-project> now|whenComplete`.",
     "When Evolvo posts a cycle-limit prompt, reply with `continue` or `quit`.",
     `Started at: ${startedAt}`,
   ].join("\n");
@@ -827,6 +903,7 @@ function buildStartProjectAcknowledgementContent(
       `<@${operatorUserId}> Could not queue project start request for \`${request.displayName}\`.`,
       result.message,
       "Usage: `/startproject existing project:<registered-project>` or `/startproject new name:<project-name>`",
+      "Plain-text fallback: `startProject existing <registered-project>` or `startProject new <project-name>`",
     ].join("\n")
     : result.action === "created"
       ? [
@@ -871,12 +948,13 @@ function buildStopProjectAcknowledgementContent(
       `<@${operatorUserId}> Could not stop the requested project.`,
       result.message,
       "Usage: `/stopproject project:<registered-project> mode:now|whenComplete`",
+      "Plain-text fallback: `stopProject <registered-project> now|whenComplete`",
     ].join("\n");
   }
 
   if (result.action === "stopped") {
     return [
-      `<@${operatorUserId}> Stopped current project \`${result.project?.displayName ?? result.project?.slug ?? "unknown"}\`.`,
+      `<@${operatorUserId}> Stopped project \`${result.project?.displayName ?? result.project?.slug ?? "unknown"}\`.`,
       result.message,
       "Runtime remains online and is waiting for further operator commands.",
     ].join("\n");
@@ -884,7 +962,7 @@ function buildStopProjectAcknowledgementContent(
 
   if (result.action === "stop-when-complete-scheduled") {
     return [
-      `<@${operatorUserId}> Current project \`${result.project?.displayName ?? result.project?.slug ?? "unknown"}\` will stop when complete.`,
+      `<@${operatorUserId}> Project \`${result.project?.displayName ?? result.project?.slug ?? "unknown"}\` will stop when complete.`,
       result.message,
       "Evolvo will return to self-work afterward and remain online for further operator commands.",
     ].join("\n");
@@ -1345,7 +1423,7 @@ async function processStopProjectControlCommand(
   workDir: string,
   messageId: string,
   requestedBy: string,
-  requestedProjectName: string,
+  requestedProject: Pick<RegisteredProjectOption, "displayName" | "slug">,
   mode: "now" | "when-project-complete",
   handlers: DiscordControlHandlers,
 ): Promise<{ result: StopProjectCommandResult; duplicate: boolean }> {
@@ -1369,16 +1447,14 @@ async function processStopProjectControlCommand(
       throw new Error("Project stop commands are not available in this runtime.");
     }
 
-    const normalizedProject = normalizeStopProjectNameInput(requestedProjectName);
-
     return {
       duplicate: false,
       result: await handlers.onStopProject({
         messageId,
         requestedAt: new Date().toISOString(),
         requestedBy,
-        projectName: normalizedProject.displayName,
-        projectSlug: normalizedProject.slug,
+        projectName: requestedProject.displayName,
+        projectSlug: requestedProject.slug,
         mode,
       }),
     };
@@ -1658,7 +1734,7 @@ export async function handleDiscordSlashCommandInteraction(
     workDir,
     interaction.id,
     `discord:${interaction.user.id}`,
-    selectedStopProject.displayName,
+    selectedStopProject,
     internalStopMode,
     handlers,
   );
@@ -1913,22 +1989,50 @@ export async function pollDiscordGracefulShutdownCommand(
       const stopProjectCommandSuffix = parseStopProjectCommand(message.content);
       if (stopProjectCommandSuffix !== null && handlers.onStopProject) {
         const parsedStopRequest = parseStopProjectRequestSuffix(stopProjectCommandSuffix);
-        const processed = !parsedStopRequest.ok
-          ? {
+        let processed: {
+          duplicate: boolean;
+          result: StopProjectCommandResult;
+        };
+        if (!parsedStopRequest.ok) {
+          processed = {
             duplicate: false,
             result: {
               ok: false,
               message: parsedStopRequest.message,
             } satisfies StopProjectCommandResult,
+          };
+        } else {
+          const projects = await listRegisteredProjects(handlers);
+          if (projects.length === 0) {
+            processed = {
+              duplicate: false,
+              result: {
+                ok: false,
+                message: "No registered projects are available to stop.",
+              } satisfies StopProjectCommandResult,
+            };
+          } else {
+            const selectedProject = findRegisteredProjectByInput(projects, parsedStopRequest.projectName);
+            if (selectedProject === null) {
+              processed = {
+                duplicate: false,
+                result: {
+                  ok: false,
+                  message: `Project \`${parsedStopRequest.projectName}\` is not in the registered project set. Use an exact slug or display name.`,
+                } satisfies StopProjectCommandResult,
+              };
+            } else {
+              processed = await processStopProjectControlCommand(
+                workDir,
+                message.id,
+                `discord:${config.operatorUserId}`,
+                selectedProject,
+                parsedStopRequest.mode,
+                handlers,
+              );
+            }
           }
-          : await processStopProjectControlCommand(
-            workDir,
-            message.id,
-            `discord:${config.operatorUserId}`,
-            parsedStopRequest.projectName,
-            parsedStopRequest.mode,
-            handlers,
-          );
+        }
         if (!processed.duplicate) {
           try {
             await sendStopProjectAcknowledgement(config, processed.result);
@@ -1942,17 +2046,99 @@ export async function pollDiscordGracefulShutdownCommand(
         continue;
       }
 
-      const requestedProjectName = parseStartProjectName(message.content);
-      if (requestedProjectName !== null && handlers.onStartProject) {
-        const processed = await processStartProjectControlCommand(
-          workDir,
-          message.id,
-          requestedProjectName,
-          "legacy",
-          `discord:${config.operatorUserId}`,
-          handlers,
-        );
-        if (!processed.duplicate) {
+      const parsedStartRequest = parseStartProjectRequest(message.content);
+      if (parsedStartRequest !== null && handlers.onStartProject) {
+        let processed:
+          | { request: StartProjectCommandRequest; result: StartProjectCommandResult; duplicate: boolean }
+          | null = null;
+
+        if (parsedStartRequest.ok) {
+          if (parsedStartRequest.mode === "new") {
+            processed = await processStartProjectControlCommand(
+              workDir,
+              message.id,
+              parsedStartRequest.projectName,
+              "new",
+              `discord:${config.operatorUserId}`,
+              handlers,
+            );
+          } else {
+            const projects = await listRegisteredProjects(handlers);
+            if (projects.length === 0) {
+              processed = {
+                duplicate: false,
+                request: {
+                  messageId: message.id,
+                  requestedAt: new Date().toISOString(),
+                  requestedBy: `discord:${config.operatorUserId}`,
+                  mode: "existing",
+                  displayName: parsedStartRequest.projectName,
+                  slug: "",
+                  repositoryName: "",
+                  issueLabel: "",
+                  workspacePath: "",
+                },
+                result: {
+                  ok: false,
+                  message: "No registered projects are available to start. Use `startProject new <project-name>` to create one.",
+                },
+              };
+            } else {
+              const selectedProject = findRegisteredProjectByInput(projects, parsedStartRequest.projectName);
+              if (selectedProject === null) {
+                processed = {
+                  duplicate: false,
+                  request: {
+                    messageId: message.id,
+                    requestedAt: new Date().toISOString(),
+                    requestedBy: `discord:${config.operatorUserId}`,
+                    mode: "existing",
+                    displayName: parsedStartRequest.projectName,
+                    slug: "",
+                    repositoryName: "",
+                    issueLabel: "",
+                    workspacePath: "",
+                  },
+                  result: {
+                    ok: false,
+                    message: `Project \`${parsedStartRequest.projectName}\` is not in the registered project set. Use an exact slug or display name, or use \`startProject new <project-name>\` to create one.`,
+                  },
+                };
+              } else {
+                processed = await processStartProjectControlCommand(
+                  workDir,
+                  message.id,
+                  selectedProject.displayName,
+                  "existing",
+                  `discord:${config.operatorUserId}`,
+                  handlers,
+                  { registeredProjectSlug: selectedProject.slug },
+                );
+              }
+            }
+          }
+        } else {
+          processed = {
+            duplicate: false,
+            request: {
+              messageId: message.id,
+              requestedAt: new Date().toISOString(),
+              requestedBy: `discord:${config.operatorUserId}`,
+              mode: "legacy",
+              displayName: parsedStartRequest.projectName ?? "<missing project name>",
+              slug: "",
+              repositoryName: "",
+              issueLabel: "",
+              workspacePath: "",
+            },
+            result: {
+              ok: false,
+              message: parsedStartRequest.message,
+            },
+          };
+        }
+
+        if (processed && !processed.duplicate) {
           try {
             await sendStartProjectAcknowledgement(config, processed.request, processed.result);
           } catch (error) {

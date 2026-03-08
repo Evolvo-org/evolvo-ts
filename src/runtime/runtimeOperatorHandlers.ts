@@ -273,7 +273,7 @@ export function createDiscordControlHandlers(options: {
         result = {
           ok: true,
           action: "already-stopped",
-          message: `Project \`${projectRecord.slug}\` is already halted. Use \`startProject <project-name>\` to resume it later.`,
+          message: `Project \`${projectRecord.slug}\` is already halted. Use \`startProject existing <registered-project>\` to resume it later.`,
           project: {
             displayName: projectRecord.displayName,
             slug: projectRecord.slug,
@@ -292,7 +292,7 @@ export function createDiscordControlHandlers(options: {
         result = {
           ok: true,
           action: "stopped",
-          message: `Project \`${projectRecord.slug}\` will not be scheduled again until \`startProject <project-name>\` is used.`,
+          message: `Project \`${projectRecord.slug}\` will not be scheduled again until \`startProject existing <registered-project>\` is used.`,
           project: {
             displayName: projectRecord.displayName,
             slug: projectRecord.slug,

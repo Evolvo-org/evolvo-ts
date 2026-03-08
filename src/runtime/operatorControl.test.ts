@@ -1112,7 +1112,7 @@ describe("operatorControl", () => {
         new Response(
           JSON.stringify([
             createDiscordControlMessage(9401, "quit after current task", "operator-1"),
-            createDiscordControlMessage(9402, "startProject Habit CLI", "operator-1"),
+            createDiscordControlMessage(9402, "startProject new Habit CLI", "operator-1"),
           ]),
           { status: 200 },
         ),
@@ -1122,7 +1122,7 @@ describe("operatorControl", () => {
         new Response(
           JSON.stringify([
             createDiscordControlMessage(9401, "quit after current task", "operator-1"),
-            createDiscordControlMessage(9402, "startProject Habit CLI", "operator-1"),
+            createDiscordControlMessage(9402, "startProject new Habit CLI", "operator-1"),
           ]),
           { status: 200 },
         ),
@@ -1189,7 +1189,7 @@ describe("operatorControl", () => {
       )
       .mockResolvedValueOnce(
         new Response(
-          JSON.stringify([{ id: "7101", content: "startProject Habit CLI", author: { id: "operator-1" } }]),
+          JSON.stringify([{ id: "7101", content: "startProject new Habit CLI", author: { id: "operator-1" } }]),
           { status: 200 },
         ),
       )
@@ -1203,7 +1203,7 @@ describe("operatorControl", () => {
       messageId: "7101",
       requestedAt: expect.any(String),
       requestedBy: "discord:operator-1",
-      mode: "legacy",
+      mode: "new",
       displayName: "Habit CLI",
       slug: "habit-cli",
       repositoryName: "habit-cli",
@@ -1250,20 +1250,42 @@ describe("operatorControl", () => {
         status: "active",
       },
     });
+    const onListRegisteredProjects = vi.fn().mockResolvedValue([
+      {
+        slug: "habit-cli",
+        displayName: "Habit CLI",
+        status: "active",
+      },
+    ]);
     const fetchSpy = vi.fn()
       .mockResolvedValueOnce(
         new Response(JSON.stringify([{ id: "7150", content: "boot", author: { id: "someone" } }]), { status: 200 }),
       )
       .mockResolvedValueOnce(
         new Response(
-          JSON.stringify([{ id: "7151", content: "startProject Habit CLI", author: { id: "operator-1" } }]),
+          JSON.stringify([{ id: "7151", content: "startProject existing Habit CLI", author: { id: "operator-1" } }]),
           { status: 200 },
         ),
       )
       .mockResolvedValueOnce(new Response(JSON.stringify({ id: "ack-resume" }), { status: 200 }));
     vi.stubGlobal("fetch", fetchSpy);
 
-    await pollDiscordGracefulShutdownCommand(workDir, { onStartProject });
+    await pollDiscordGracefulShutdownCommand(workDir, {
+      onStartProject,
+      onListRegisteredProjects,
+    });
+
+    expect(onStartProject).toHaveBeenCalledWith({
+      messageId: "7151",
+      requestedAt: expect.any(String),
+      requestedBy: "discord:operator-1",
+      mode: "existing",
+      displayName: "Habit CLI",
+      slug: "habit-cli",
+      repositoryName: "habit-cli",
+      issueLabel: "project:habit-cli",
+      workspacePath: "/home/paddy/habit-cli",
+    });
 
     expect(fetchSpy).toHaveBeenNthCalledWith(
       3,
@@ -1294,26 +1316,36 @@ describe("operatorControl", () => {
     const onStopProject = vi.fn().mockResolvedValue({
       ok: true,
       action: "stopped",
-      message: "Project `habit-cli` will not be selected again until `startProject <project-name>` is used.",
+      message: "Project `habit-cli` will not be selected again until `startProject existing <registered-project>` is used.",
       project: {
         displayName: "Habit CLI",
         slug: "habit-cli",
       },
     });
+    const onListRegisteredProjects = vi.fn().mockResolvedValue([
+      {
+        slug: "habit-cli",
+        displayName: "Habit CLI",
+        status: "active",
+      },
+    ]);
     const fetchSpy = vi.fn()
       .mockResolvedValueOnce(
         new Response(JSON.stringify([{ id: "7160", content: "boot", author: { id: "someone" } }]), { status: 200 }),
       )
       .mockResolvedValueOnce(
         new Response(
-          JSON.stringify([{ id: "7161", content: "stopProject Habit CLI", author: { id: "operator-1" } }]),
+          JSON.stringify([{ id: "7161", content: "stopProject Habit CLI now", author: { id: "operator-1" } }]),
           { status: 200 },
         ),
       )
       .mockResolvedValueOnce(new Response(JSON.stringify({ id: "ack-stop" }), { status: 200 }));
     vi.stubGlobal("fetch", fetchSpy);
 
-    await pollDiscordGracefulShutdownCommand(workDir, { onStopProject });
+    await pollDiscordGracefulShutdownCommand(workDir, {
+      onStopProject,
+      onListRegisteredProjects,
+    });
 
     expect(onStopProject).toHaveBeenCalledWith({
       messageId: "7161",
@@ -1330,8 +1362,8 @@ describe("operatorControl", () => {
         method: "POST",
         body: JSON.stringify({
           content: [
-            "<@operator-1> Stopped current project `Habit CLI`.",
-            "Project `habit-cli` will not be selected again until `startProject <project-name>` is used.",
+            "<@operator-1> Stopped project `Habit CLI`.",
+            "Project `habit-cli` will not be selected again until `startProject existing <registered-project>` is used.",
             "Runtime remains online and is waiting for further operator commands.",
           ].join("\n"),
         }),
@@ -1372,8 +1404,51 @@ describe("operatorControl", () => {
         body: JSON.stringify({
           content: [
             "<@operator-1> Could not stop the requested project.",
-            "`stopProject` requires a project name.",
+            "`stopProject` requires a registered project target.",
             "Usage: `/stopproject project:<registered-project> mode:now|whenComplete`",
+            "Plain-text fallback: `stopProject <registered-project> now|whenComplete`",
+          ].join("\n"),
+        }),
+      }),
+    );
+  });
+
+  it("requires an explicit stopProject mode in plain-text commands", async () => {
+    const workDir = await createTempWorkDir();
+    tempDirs.push(workDir);
+    vi.stubEnv("DISCORD_BOT_TOKEN", "bot-token");
+    vi.stubEnv("DISCORD_CONTROL_GUILD_ID", "guild-1");
+    vi.stubEnv("DISCORD_CONTROL_CHANNEL_ID", "channel-1");
+    vi.stubEnv("DISCORD_OPERATOR_USER_ID", "operator-1");
+
+    const onStopProject = vi.fn();
+    const fetchSpy = vi.fn()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify([{ id: "7174", content: "boot", author: { id: "someone" } }]), { status: 200 }),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify([{ id: "7175", content: "stopProject habit-cli", author: { id: "operator-1" } }]),
+          { status: 200 },
+        ),
+      )
+      .mockResolvedValueOnce(new Response(JSON.stringify({ id: "ack-stop-invalid-mode" }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchSpy);
+
+    await pollDiscordGracefulShutdownCommand(workDir, { onStopProject });
+
+    expect(onStopProject).not.toHaveBeenCalled();
+    expect(fetchSpy).toHaveBeenNthCalledWith(
+      3,
+      "https://discord.com/api/v10/channels/channel-1/messages",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({
+          content: [
+            "<@operator-1> Could not stop the requested project.",
+            "`stopProject` requires an explicit mode. Supported values are `now` and `whenComplete`.",
+            "Usage: `/stopproject project:<registered-project> mode:now|whenComplete`",
+            "Plain-text fallback: `stopProject <registered-project> now|whenComplete`",
           ].join("\n"),
         }),
       }),
@@ -1397,20 +1472,30 @@ describe("operatorControl", () => {
         slug: "habit-cli",
       },
     });
+    const onListRegisteredProjects = vi.fn().mockResolvedValue([
+      {
+        slug: "habit-cli",
+        displayName: "Habit CLI",
+        status: "active",
+      },
+    ]);
     const fetchSpy = vi.fn()
       .mockResolvedValueOnce(
         new Response(JSON.stringify([{ id: "7165", content: "boot", author: { id: "someone" } }]), { status: 200 }),
       )
       .mockResolvedValueOnce(
         new Response(
-          JSON.stringify([{ id: "7166", content: "stopProject Habit CLI whenProjectComplete", author: { id: "operator-1" } }]),
+          JSON.stringify([{ id: "7166", content: "stopProject Habit CLI whenComplete", author: { id: "operator-1" } }]),
           { status: 200 },
         ),
       )
       .mockResolvedValueOnce(new Response(JSON.stringify({ id: "ack-stop-when-complete" }), { status: 200 }));
     vi.stubGlobal("fetch", fetchSpy);
 
-    await pollDiscordGracefulShutdownCommand(workDir, { onStopProject });
+    await pollDiscordGracefulShutdownCommand(workDir, {
+      onStopProject,
+      onListRegisteredProjects,
+    });
 
     expect(onStopProject).toHaveBeenCalledWith({
       messageId: "7166",
@@ -1427,7 +1512,7 @@ describe("operatorControl", () => {
         method: "POST",
         body: JSON.stringify({
           content: [
-            "<@operator-1> Current project `Habit CLI` will stop when complete.",
+            "<@operator-1> Project `Habit CLI` will stop when complete.",
             "Project `habit-cli` will keep running until it has no actionable issues left. Evolvo will then stop it automatically, return to self-work, and remain online.",
             "Evolvo will return to self-work afterward and remain online for further operator commands.",
           ].join("\n"),
@@ -1596,8 +1681,61 @@ describe("operatorControl", () => {
         body: JSON.stringify({
           content: [
             "<@operator-1> Could not queue project start request for `<missing project name>`.",
-            "Project name is required.",
+            "`startProject` requires an explicit path (`existing` or `new`).",
             "Usage: `/startproject existing project:<registered-project>` or `/startproject new name:<project-name>`",
+            "Plain-text fallback: `startProject existing <registered-project>` or `startProject new <project-name>`",
+          ].join("\n"),
+        }),
+      }),
+    );
+  });
+
+  it("requires plain-text startProject existing targets to be in the registered project set", async () => {
+    const workDir = await createTempWorkDir();
+    tempDirs.push(workDir);
+    vi.stubEnv("DISCORD_BOT_TOKEN", "bot-token");
+    vi.stubEnv("DISCORD_CONTROL_GUILD_ID", "guild-1");
+    vi.stubEnv("DISCORD_CONTROL_CHANNEL_ID", "channel-1");
+    vi.stubEnv("DISCORD_OPERATOR_USER_ID", "operator-1");
+
+    const onStartProject = vi.fn();
+    const onListRegisteredProjects = vi.fn().mockResolvedValue([
+      {
+        slug: "habit-cli",
+        displayName: "Habit CLI",
+        status: "active",
+      },
+    ]);
+    const fetchSpy = vi.fn()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify([{ id: "7204", content: "boot", author: { id: "someone" } }]), { status: 200 }),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify([{ id: "7205", content: "startProject existing Missing Project", author: { id: "operator-1" } }]),
+          { status: 200 },
+        ),
+      )
+      .mockResolvedValueOnce(new Response(JSON.stringify({ id: "ack-start-existing-missing" }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchSpy);
+
+    await pollDiscordGracefulShutdownCommand(workDir, {
+      onStartProject,
+      onListRegisteredProjects,
+    });
+
+    expect(onStartProject).not.toHaveBeenCalled();
+    expect(fetchSpy).toHaveBeenNthCalledWith(
+      3,
+      "https://discord.com/api/v10/channels/channel-1/messages",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({
+          content: [
+            "<@operator-1> Could not queue project start request for `Missing Project`.",
+            "Project `Missing Project` is not in the registered project set. Use an exact slug or display name, or use `startProject new <project-name>` to create one.",
+            "Usage: `/startproject existing project:<registered-project>` or `/startproject new name:<project-name>`",
+            "Plain-text fallback: `startProject existing <registered-project>` or `startProject new <project-name>`",
           ].join("\n"),
         }),
       }),
@@ -1969,7 +2107,7 @@ describe("operatorControl", () => {
     const onStopProject = vi.fn().mockResolvedValue({
       ok: true,
       action: "stopped",
-      message: "Project `habit-cli` will not be selected again until `startProject <project-name>` is used.",
+      message: "Project `habit-cli` will not be selected again until `startProject existing <registered-project>` is used.",
       project: {
         displayName: "Habit CLI",
         slug: "habit-cli",
@@ -2006,15 +2144,15 @@ describe("operatorControl", () => {
     });
     expect(interaction.editReply).toHaveBeenCalledWith({
       content: [
-        "<@operator-1> Stopped current project `Habit CLI`.",
-        "Project `habit-cli` will not be selected again until `startProject <project-name>` is used.",
+        "<@operator-1> Stopped project `Habit CLI`.",
+        "Project `habit-cli` will not be selected again until `startProject existing <registered-project>` is used.",
         "Runtime remains online and is waiting for further operator commands.",
       ].join("\n"),
     });
     expect(result).toEqual({
       replyContent: [
-        "<@operator-1> Stopped current project `Habit CLI`.",
-        "Project `habit-cli` will not be selected again until `startProject <project-name>` is used.",
+        "<@operator-1> Stopped project `Habit CLI`.",
+        "Project `habit-cli` will not be selected again until `startProject existing <registered-project>` is used.",
         "Runtime remains online and is waiting for further operator commands.",
       ].join("\n"),
     });
@@ -2068,14 +2206,14 @@ describe("operatorControl", () => {
     });
     expect(interaction.editReply).toHaveBeenCalledWith({
       content: [
-        "<@operator-1> Current project `Habit CLI` will stop when complete.",
+        "<@operator-1> Project `Habit CLI` will stop when complete.",
         "Project `habit-cli` will keep running until it has no actionable issues left. Evolvo will then stop it automatically, return to self-work, and remain online.",
         "Evolvo will return to self-work afterward and remain online for further operator commands.",
       ].join("\n"),
     });
     expect(result).toEqual({
       replyContent: [
-        "<@operator-1> Current project `Habit CLI` will stop when complete.",
+        "<@operator-1> Project `Habit CLI` will stop when complete.",
         "Project `habit-cli` will keep running until it has no actionable issues left. Evolvo will then stop it automatically, return to self-work, and remain online.",
         "Evolvo will return to self-work afterward and remain online for further operator commands.",
       ].join("\n"),
