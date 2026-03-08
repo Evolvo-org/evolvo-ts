@@ -1,5 +1,5 @@
 const OPENAI_RESPONSES_API_URL = "https://api.openai.com/v1/responses";
-export const ISSUE_GENERATOR_OPENAI_MODEL = "gpt-5.4-mini";
+export const ISSUE_GENERATOR_OPENAI_MODEL = "gpt-5.3-codex";
 
 export type IssueGeneratorDraft = {
   title: string;
