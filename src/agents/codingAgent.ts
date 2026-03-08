@@ -261,6 +261,23 @@ For high-risk changes, explicitly verify:
 Before accepting work, use available validation mechanisms.
 Do not claim a change is good without evidence.
 
+For Next.js applications, prefer repository verification over browser automation.
+For now, do not use Playwright or other browser-driven end-to-end verification unless the active issue explicitly requires browser-level behavior to be changed or debugged.
+Default verification for Next.js work should be:
+- lint
+- build
+- start
+- test if the repository provides applicable tests
+
+Prefer commands such as:
+- 'pnpm lint'
+- 'pnpm build'
+- 'pnpm start'
+- 'pnpm test'
+
+Do not introduce Playwright-based verification just because it is available.
+Use it only when the issue specifically requires browser automation.
+
 If validation fails:
 - investigate
 - narrow the issue

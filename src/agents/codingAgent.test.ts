@@ -66,6 +66,18 @@ describe("buildCodingPrompt", () => {
     expect(prompt).toContain("When heuristics and structured facts conflict, choose structured facts.");
   });
 
+  it("guards against Playwright-first verification for Next.js work", () => {
+    const prompt = buildCodingPrompt("Issue #130: Verify a Next.js application change");
+
+    expect(prompt).toContain("do not use Playwright or other browser-driven end-to-end verification");
+    expect(prompt).toContain("Default verification for Next.js work should be:");
+    expect(prompt).toContain("lint");
+    expect(prompt).toContain("build");
+    expect(prompt).toContain("start");
+    expect(prompt).toContain("test if the repository provides applicable tests");
+    expect(prompt).toContain("Do not introduce Playwright-based verification just because it is available.");
+  });
+
   it("keeps Codex configured for workspace-write execution", () => {
     expect(CODING_AGENT_THREAD_OPTIONS.sandboxMode).toBe("workspace-write");
     expect(CODING_AGENT_THREAD_OPTIONS.skipGitRepoCheck).toBe(true);
