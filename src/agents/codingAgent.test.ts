@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   CODING_AGENT_THREAD_OPTIONS,
+  DEFAULT_CODING_AGENT_MODEL,
+  ESCALATED_CODING_AGENT_MODEL,
   buildCodingAgentThreadOptions,
   buildCodingPrompt,
 } from "./codingAgent.js";
@@ -79,6 +81,9 @@ describe("buildCodingPrompt", () => {
   });
 
   it("keeps Codex configured for workspace-write execution", () => {
+    expect(DEFAULT_CODING_AGENT_MODEL).toBe("gpt-5.3-codex");
+    expect(ESCALATED_CODING_AGENT_MODEL).toBe("gpt-5.4");
+    expect(CODING_AGENT_THREAD_OPTIONS.model).toBe(DEFAULT_CODING_AGENT_MODEL);
     expect(CODING_AGENT_THREAD_OPTIONS.sandboxMode).toBe("workspace-write");
     expect(CODING_AGENT_THREAD_OPTIONS.skipGitRepoCheck).toBe(true);
     expect(CODING_AGENT_THREAD_OPTIONS.approvalPolicy).toBe("never");
@@ -89,6 +94,16 @@ describe("buildCodingPrompt", () => {
 
     expect(options).toEqual({
       ...CODING_AGENT_THREAD_OPTIONS,
+      workingDirectory: "/home/paddy/habit-cli",
+    });
+  });
+
+  it("builds thread options for an explicit escalation model", () => {
+    const options = buildCodingAgentThreadOptions("/home/paddy/habit-cli", ESCALATED_CODING_AGENT_MODEL);
+
+    expect(options).toEqual({
+      ...CODING_AGENT_THREAD_OPTIONS,
+      model: ESCALATED_CODING_AGENT_MODEL,
       workingDirectory: "/home/paddy/habit-cli",
     });
   });

@@ -12,8 +12,11 @@ vi.mock("@openai/codex-sdk", () => ({
 }));
 
 vi.mock("./codingAgent.js", () => ({
-  CODING_AGENT_THREAD_OPTIONS: { sandboxMode: "workspace-write", skipGitRepoCheck: true },
-  buildCodingAgentThreadOptions: (workDir: string) => ({
+  CODING_AGENT_THREAD_OPTIONS: { model: "gpt-5.3-codex", sandboxMode: "workspace-write", skipGitRepoCheck: true },
+  DEFAULT_CODING_AGENT_MODEL: "gpt-5.3-codex",
+  ESCALATED_CODING_AGENT_MODEL: "gpt-5.4",
+  buildCodingAgentThreadOptions: (workDir: string, model = "gpt-5.3-codex") => ({
+    model,
     sandboxMode: "workspace-write",
     skipGitRepoCheck: true,
     workingDirectory: workDir,
@@ -81,7 +84,69 @@ describe("runCodingAgent", () => {
     );
 
     expect(startThreadMock).toHaveBeenCalledTimes(1);
+    expect(startThreadMock).toHaveBeenCalledWith({
+      model: "gpt-5.3-codex",
+      sandboxMode: "workspace-write",
+      skipGitRepoCheck: true,
+      workingDirectory: "/home/paddy/evolvo-ts",
+    });
     expect(runStreamedMock).toHaveBeenCalledWith("PROMPT:Create src/utils/add.ts");
+  });
+
+  it("escalates from gpt-5.3-codex to gpt-5.4 when an edit request makes no repository edits", async () => {
+    const defaultRunStreamedMock = vi.fn().mockResolvedValue(createEventStream([
+      {
+        type: "item.completed",
+        item: {
+          id: "1",
+          type: "agent_message",
+          text: "I planned the change but did not edit files.",
+        },
+      },
+    ]));
+    const escalatedRunStreamedMock = vi.fn().mockResolvedValue(createEventStream([
+      {
+        type: "item.completed",
+        item: {
+          id: "2",
+          type: "file_change",
+          status: "completed",
+          changes: [{ kind: "add", path: "src/utils/add.ts" }],
+        },
+      },
+      {
+        type: "item.completed",
+        item: {
+          id: "3",
+          type: "agent_message",
+          text: "done",
+        },
+      },
+    ]));
+    startThreadMock
+      .mockReturnValueOnce({ runStreamed: defaultRunStreamedMock })
+      .mockReturnValueOnce({ runStreamed: escalatedRunStreamedMock });
+
+    const { runCodingAgent } = await import("./runCodingAgent.js");
+    const result = await runCodingAgent("Create src/utils/add.ts");
+
+    expect(result.summary.editedFiles).toEqual(["src/utils/add.ts"]);
+    expect(startThreadMock).toHaveBeenNthCalledWith(1, {
+      model: "gpt-5.3-codex",
+      sandboxMode: "workspace-write",
+      skipGitRepoCheck: true,
+      workingDirectory: "/home/paddy/evolvo-ts",
+    });
+    expect(startThreadMock).toHaveBeenNthCalledWith(2, {
+      model: "gpt-5.4",
+      sandboxMode: "workspace-write",
+      skipGitRepoCheck: true,
+      workingDirectory: "/home/paddy/evolvo-ts",
+    });
+    expect(console.log).toHaveBeenCalledWith("[coding-agent] starting model=gpt-5.3-codex");
+    expect(console.log).toHaveBeenCalledWith(
+      "[coding-agent] escalating model from gpt-5.3-codex to gpt-5.4: The Codex run did not make repository edits for a file-edit request.",
+    );
   });
 
   it("throws when a file edit request completes without repository edits", async () => {
@@ -463,6 +528,7 @@ describe("runCodingAgent", () => {
     const result = await runCodingAgent("Create managed project pull request");
 
     expect(startThreadMock).toHaveBeenCalledWith({
+      model: "gpt-5.3-codex",
       sandboxMode: "workspace-write",
       skipGitRepoCheck: true,
       workingDirectory: "/home/paddy/habit-cli",

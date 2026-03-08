@@ -391,8 +391,11 @@ Your identity is earned through accepted diffs.
 Each cycle should leave you slightly better than before.
 `.trim();
 
+export const DEFAULT_CODING_AGENT_MODEL = "gpt-5.3-codex";
+export const ESCALATED_CODING_AGENT_MODEL = "gpt-5.4";
+
 export const CODING_AGENT_THREAD_OPTIONS: ThreadOptions = {
-  model: "gpt-5.4",
+  model: DEFAULT_CODING_AGENT_MODEL,
   sandboxMode: "workspace-write",
   workingDirectory: WORK_DIR,
   skipGitRepoCheck: true,
@@ -401,9 +404,13 @@ export const CODING_AGENT_THREAD_OPTIONS: ThreadOptions = {
   approvalPolicy: "never",
 };
 
-export function buildCodingAgentThreadOptions(workDir: string): ThreadOptions {
+export function buildCodingAgentThreadOptions(
+  workDir: string,
+  model = DEFAULT_CODING_AGENT_MODEL,
+): ThreadOptions {
   return {
     ...CODING_AGENT_THREAD_OPTIONS,
+    model,
     workingDirectory: workDir,
   };
 }
