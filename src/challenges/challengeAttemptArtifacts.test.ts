@@ -70,6 +70,7 @@ describe("challengeAttemptArtifacts", () => {
           failedValidationCommands: [],
           reviewOutcome: "accepted",
           pullRequestCreated: true,
+          pullRequestUrls: ["https://github.com/owner/repo/pull/45"],
           externalRepositories: [],
           externalPullRequests: [],
           mergedExternalPullRequest: false,

@@ -30,6 +30,9 @@ const buildProjectRoutingBlockedCommentMock = vi.fn();
 const buildUnifiedIssueQueueMock = vi.fn();
 const selectIssueForWorkWithOpenAiMock = vi.fn();
 const ensureProjectBoardsForRegistryMock = vi.fn();
+const runReviewAgentMock = vi.fn();
+const runReleaseAgentMock = vi.fn();
+const submitPullRequestReviewMock = vi.fn();
 
 const TEST_WORK_DIR = "/tmp/evolvo";
 const TEST_STATE_DIR = `${TEST_WORK_DIR}/.evolvo`;
@@ -165,6 +168,32 @@ vi.mock("./constants/workDir.js", () => ({
 vi.mock("./agents/runCodingAgent.js", () => ({
   configureCodingAgentExecutionContext: configureCodingAgentExecutionContextMock,
   runCodingAgent: runCodingAgentMock,
+}));
+
+vi.mock("./agents/reviewAgent.js", () => ({
+  runReviewAgent: runReviewAgentMock,
+}));
+
+vi.mock("./agents/runReleaseAgent.js", () => ({
+  runReleaseAgent: runReleaseAgentMock,
+}));
+
+vi.mock("./github/githubPullRequests.js", () => ({
+  GitHubPullRequestClient: class {
+    submitReview = submitPullRequestReviewMock;
+  },
+  parseGitHubPullRequestUrl: (url: string) => {
+    const match = url.match(/^https:\/\/github\.com\/([^/]+)\/([^/]+)\/pull\/(\d+)$/);
+    if (!match) {
+      return null;
+    }
+    return {
+      owner: match[1],
+      repo: match[2],
+      pullNumber: Number.parseInt(match[3] ?? "0", 10),
+      url,
+    };
+  },
 }));
 
 vi.mock("./agents/plannerAgent.js", () => ({
@@ -372,6 +401,20 @@ describe("main replenishment integration", () => {
     runIssueCommandMock.mockReset();
     runIssueCommandMock.mockResolvedValue(false);
     runCodingAgentMock.mockReset();
+    runReviewAgentMock.mockReset();
+    runReviewAgentMock.mockResolvedValue({
+      decision: "approve",
+      summary: "Looks good.",
+      reasons: ["Validation passed."],
+      finalResponse: "{\"decision\":\"approve\"}",
+    });
+    runReleaseAgentMock.mockReset();
+    runReleaseAgentMock.mockResolvedValue({
+      mergedPullRequest: true,
+      finalResponse: "release complete",
+    });
+    submitPullRequestReviewMock.mockReset();
+    submitPullRequestReviewMock.mockResolvedValue(undefined);
     configureCodingAgentExecutionContextMock.mockReset();
     configureCodingAgentExecutionContextMock.mockImplementation(() => undefined);
     ensureProjectBoardsForRegistryMock.mockReset();
@@ -455,6 +498,7 @@ describe("main replenishment integration", () => {
           failedValidationCommands: [],
           reviewOutcome: "accepted",
           pullRequestCreated: false,
+          pullRequestUrls: [],
           externalRepositories: [],
           externalPullRequests: [],
           mergedExternalPullRequest: false,
@@ -470,6 +514,7 @@ describe("main replenishment integration", () => {
           failedValidationCommands: [],
           reviewOutcome: "accepted",
           pullRequestCreated: true,
+          pullRequestUrls: ["https://github.com/owner/repo/pull/11"],
           externalRepositories: [],
           externalPullRequests: [],
           mergedExternalPullRequest: false,

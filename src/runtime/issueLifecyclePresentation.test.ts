@@ -47,6 +47,7 @@ function createRunResult(overrides: Partial<CodingAgentRunResult> = {}): CodingA
       failedValidationCommands: [],
       reviewOutcome: "accepted",
       pullRequestCreated: true,
+      pullRequestUrls: ["https://github.com/owner/repo/pull/10"],
       externalRepositories: ["https://github.com/example/repo"],
       externalPullRequests: ["https://github.com/example/repo/pull/1"],
       mergedExternalPullRequest: true,

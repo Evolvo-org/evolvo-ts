@@ -14,6 +14,11 @@ type GraphqlOwner = {
     nodes?: Array<{
       id?: string | null;
       number?: number | null;
+      repositories?: {
+        nodes?: Array<{
+          nameWithOwner?: string | null;
+        } | null> | null;
+      } | null;
       title?: string | null;
       url?: string | null;
     } | null> | null;
@@ -33,8 +38,66 @@ type EnsureProjectBoardResult = {
   workflow: ProjectWorkflow;
 };
 
+type ProjectStageOptionInput = {
+  color: "BLUE" | "GRAY" | "GREEN" | "ORANGE" | "PINK" | "PURPLE" | "RED" | "YELLOW";
+  description: string;
+  name: ProjectWorkflowStage;
+};
+
 const PROJECT_TITLE_SUFFIX = " Workflow";
 const STAGE_FIELD_NAME = "Stage";
+const PROJECT_STAGE_OPTIONS: ProjectStageOptionInput[] = [
+  {
+    name: "Inbox",
+    color: "GRAY",
+    description: "raw generated work, not yet processed",
+  },
+  {
+    name: "Planning",
+    color: "BLUE",
+    description: "planner is evaluating/splitting/prioritizing",
+  },
+  {
+    name: "Ready for Dev",
+    color: "YELLOW",
+    description: "implementation-ready",
+  },
+  {
+    name: "In Dev",
+    color: "ORANGE",
+    description: "dev agent currently owns it",
+  },
+  {
+    name: "Ready for Review",
+    color: "PURPLE",
+    description: "PR exists and is awaiting review",
+  },
+  {
+    name: "In Review",
+    color: "PINK",
+    description: "review agent currently processing it",
+  },
+  {
+    name: "Ready for Release",
+    color: "GREEN",
+    description: "approved, merge/release pending",
+  },
+  {
+    name: "Releasing",
+    color: "BLUE",
+    description: "release agent currently processing it",
+  },
+  {
+    name: "Blocked",
+    color: "RED",
+    description: "needs human input / external dependency / repeated failure",
+  },
+  {
+    name: "Done",
+    color: "GREEN",
+    description: "completed",
+  },
+];
 
 function buildProjectBoardTitle(project: ProjectRecord): string {
   return `${project.executionRepo.repo}${PROJECT_TITLE_SUFFIX}`;
@@ -60,6 +123,7 @@ export class GitHubProjectsV2Client {
 
   public async ensureProjectBoard(project: ProjectRecord): Promise<EnsureProjectBoardResult> {
     const owner = await this.getOwner(project.executionRepo.owner, buildProjectBoardTitle(project));
+    const repositoryId = await this.getRepositoryId(project.executionRepo.owner, project.executionRepo.repo);
     const existingProject = owner.projectsV2?.nodes?.find((entry) =>
       entry?.title?.trim().toLowerCase() === buildProjectBoardTitle(project).trim().toLowerCase()
     ) ?? null;
@@ -70,7 +134,10 @@ export class GitHubProjectsV2Client {
         number: existingProject.number,
         url: existingProject.url,
       }
-      : await this.createProjectBoard(owner.id, buildProjectBoardTitle(project));
+      : await this.createProjectBoard(owner.id, buildProjectBoardTitle(project), repositoryId);
+    if (existingProject?.id && !this.isRepositoryLinked(existingProject, project.executionRepo.owner, project.executionRepo.repo)) {
+      await this.linkProjectToRepository(board.id, repositoryId);
+    }
     const stageField = await this.ensureStageField(board.id, board.number, project.executionRepo.owner);
 
     return {
@@ -89,54 +156,23 @@ export class GitHubProjectsV2Client {
   }
 
   private async getOwner(owner: string, projectTitle: string): Promise<GraphqlOwner> {
-    const data = await this.client.graphql<{
-      organization?: GraphqlOwner | null;
-      user?: GraphqlOwner | null;
-    }>(
-      `
-        query GetProjectsOwner($owner: String!, $projectTitle: String!) {
-          organization(login: $owner) {
-            id
-            login
-            __typename
-            projectsV2(first: 100, query: $projectTitle) {
-              nodes {
-                id
-                number
-                title
-                url
-              }
-            }
-          }
-          user(login: $owner) {
-            id
-            login
-            __typename
-            projectsV2(first: 100, query: $projectTitle) {
-              nodes {
-                id
-                number
-                title
-                url
-              }
-            }
-          }
-        }
-      `,
-      { owner, projectTitle },
-    );
-
-    const resolvedOwner = data.organization ?? data.user ?? null;
-    if (!resolvedOwner?.id || !resolvedOwner.login) {
-      throw new Error(`Could not resolve GitHub Projects owner metadata for ${owner}.`);
+    const organization = await this.tryGetOrganizationOwner(owner, projectTitle);
+    if (organization?.id && organization.login) {
+      return organization;
     }
 
-    return resolvedOwner;
+    const user = await this.tryGetUserOwner(owner, projectTitle);
+    if (user?.id && user.login) {
+      return user;
+    }
+
+    throw new Error(`Could not resolve GitHub Projects owner metadata for ${owner}.`);
   }
 
   private async createProjectBoard(
     ownerId: string,
     title: string,
+    repositoryId: string,
   ): Promise<{ id: string; number: number; url: string }> {
     const data = await this.client.graphql<{
       createProjectV2?: {
@@ -148,8 +184,8 @@ export class GitHubProjectsV2Client {
       } | null;
     }>(
       `
-        mutation CreateProjectBoard($ownerId: ID!, $title: String!) {
-          createProjectV2(input: { ownerId: $ownerId, title: $title }) {
+        mutation CreateProjectBoard($ownerId: ID!, $repositoryId: ID!, $title: String!) {
+          createProjectV2(input: { ownerId: $ownerId, repositoryId: $repositoryId, title: $title }) {
             projectV2 {
               id
               number
@@ -158,7 +194,7 @@ export class GitHubProjectsV2Client {
           }
         }
       `,
-      { ownerId, title },
+      { ownerId, repositoryId, title },
     );
 
     const project = data.createProjectV2?.projectV2 ?? null;
@@ -178,64 +214,7 @@ export class GitHubProjectsV2Client {
     projectNumber: number,
     owner: string,
   ): Promise<GraphqlProjectField & { id: string }> {
-    const project = await this.client.graphql<{
-      organization?: {
-        projectV2?: {
-          fields?: {
-            nodes?: Array<GraphqlProjectField | null> | null;
-          } | null;
-        } | null;
-      } | null;
-      user?: {
-        projectV2?: {
-          fields?: {
-            nodes?: Array<GraphqlProjectField | null> | null;
-          } | null;
-        } | null;
-      } | null;
-    }>(
-      `
-        query GetProjectStageField($owner: String!, $number: Int!) {
-          organization(login: $owner) {
-            projectV2(number: $number) {
-              fields(first: 50) {
-                nodes {
-                  ... on ProjectV2SingleSelectField {
-                    id
-                    name
-                    options {
-                      id
-                      name
-                    }
-                  }
-                }
-              }
-            }
-          }
-          user(login: $owner) {
-            projectV2(number: $number) {
-              fields(first: 50) {
-                nodes {
-                  ... on ProjectV2SingleSelectField {
-                    id
-                    name
-                    options {
-                      id
-                      name
-                    }
-                  }
-                }
-              }
-            }
-          }
-        }
-      `,
-      { owner, number: projectNumber },
-    );
-
-    const fields = project.organization?.projectV2?.fields?.nodes
-      ?? project.user?.projectV2?.fields?.nodes
-      ?? [];
+    const fields = await this.getProjectStageFields(owner, projectNumber);
     const existing = fields.find((field) => field?.name?.trim() === STAGE_FIELD_NAME) ?? null;
     if (existing?.id) {
       return {
@@ -274,7 +253,7 @@ export class GitHubProjectsV2Client {
       `,
       {
         projectId,
-        options: PROJECT_WORKFLOW_STAGES.map((stage) => ({ name: stage })),
+        options: PROJECT_STAGE_OPTIONS,
       },
     );
 
@@ -287,5 +266,217 @@ export class GitHubProjectsV2Client {
       ...createdField,
       id: createdField.id,
     };
+  }
+
+  private async getRepositoryId(owner: string, repo: string): Promise<string> {
+    const data = await this.client.graphql<{
+      repository?: {
+        id?: string | null;
+      } | null;
+    }>(
+      `
+        query GetRepositoryId($owner: String!, $repo: String!) {
+          repository(owner: $owner, name: $repo) {
+            id
+          }
+        }
+      `,
+      { owner, repo },
+    );
+
+    const repositoryId = data.repository?.id?.trim();
+    if (!repositoryId) {
+      throw new Error(`Could not resolve repository metadata for ${owner}/${repo}.`);
+    }
+
+    return repositoryId;
+  }
+
+  private isRepositoryLinked(
+    project: {
+      repositories?: {
+        nodes?: Array<{
+          nameWithOwner?: string | null;
+        } | null> | null;
+      } | null;
+    },
+    owner: string,
+    repo: string,
+  ): boolean {
+    const repositoryReference = `${owner}/${repo}`.toLowerCase();
+    return project.repositories?.nodes?.some((entry) => entry?.nameWithOwner?.trim().toLowerCase() === repositoryReference) ?? false;
+  }
+
+  private async linkProjectToRepository(projectId: string, repositoryId: string): Promise<void> {
+    await this.client.graphql<{
+      linkProjectV2ToRepository?: {
+        repository?: {
+          id?: string | null;
+        } | null;
+      } | null;
+    }>(
+      `
+        mutation LinkProjectToRepository($projectId: ID!, $repositoryId: ID!) {
+          linkProjectV2ToRepository(input: { projectId: $projectId, repositoryId: $repositoryId }) {
+            repository {
+              id
+            }
+          }
+        }
+      `,
+      { projectId, repositoryId },
+    );
+  }
+
+  private async tryGetOrganizationOwner(owner: string, projectTitle: string): Promise<GraphqlOwner | null> {
+    const data = await this.client.graphql<{
+      organization?: GraphqlOwner | null;
+    }>(
+      `
+        query GetOrganizationProjectsOwner($owner: String!, $projectTitle: String!) {
+          organization(login: $owner) {
+            id
+            login
+            __typename
+            projectsV2(first: 100, query: $projectTitle) {
+              nodes {
+                id
+                number
+                repositories(first: 20) {
+                  nodes {
+                    nameWithOwner
+                  }
+                }
+                title
+                url
+              }
+            }
+          }
+        }
+      `,
+      { owner, projectTitle },
+    );
+
+    return data.organization ?? null;
+  }
+
+  private async tryGetUserOwner(owner: string, projectTitle: string): Promise<GraphqlOwner | null> {
+    const data = await this.client.graphql<{
+      user?: GraphqlOwner | null;
+    }>(
+      `
+        query GetUserProjectsOwner($owner: String!, $projectTitle: String!) {
+          user(login: $owner) {
+            id
+            login
+            __typename
+            projectsV2(first: 100, query: $projectTitle) {
+              nodes {
+                id
+                number
+                repositories(first: 20) {
+                  nodes {
+                    nameWithOwner
+                  }
+                }
+                title
+                url
+              }
+            }
+          }
+        }
+      `,
+      { owner, projectTitle },
+    );
+
+    return data.user ?? null;
+  }
+
+  private async getProjectStageFields(owner: string, projectNumber: number): Promise<Array<GraphqlProjectField | null>> {
+    const organizationFields = await this.tryGetOrganizationStageFields(owner, projectNumber);
+    if (organizationFields !== null) {
+      return organizationFields;
+    }
+
+    const userFields = await this.tryGetUserStageFields(owner, projectNumber);
+    return userFields ?? [];
+  }
+
+  private async tryGetOrganizationStageFields(
+    owner: string,
+    projectNumber: number,
+  ): Promise<Array<GraphqlProjectField | null> | null> {
+    const project = await this.client.graphql<{
+      organization?: {
+        projectV2?: {
+          fields?: {
+            nodes?: Array<GraphqlProjectField | null> | null;
+          } | null;
+        } | null;
+      } | null;
+    }>(
+      `
+        query GetOrganizationProjectStageField($owner: String!, $number: Int!) {
+          organization(login: $owner) {
+            projectV2(number: $number) {
+              fields(first: 50) {
+                nodes {
+                  ... on ProjectV2SingleSelectField {
+                    id
+                    name
+                    options {
+                      id
+                      name
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      `,
+      { owner, number: projectNumber },
+    );
+
+    return project.organization?.projectV2?.fields?.nodes ?? null;
+  }
+
+  private async tryGetUserStageFields(
+    owner: string,
+    projectNumber: number,
+  ): Promise<Array<GraphqlProjectField | null> | null> {
+    const project = await this.client.graphql<{
+      user?: {
+        projectV2?: {
+          fields?: {
+            nodes?: Array<GraphqlProjectField | null> | null;
+          } | null;
+        } | null;
+      } | null;
+    }>(
+      `
+        query GetUserProjectStageField($owner: String!, $number: Int!) {
+          user(login: $owner) {
+            projectV2(number: $number) {
+              fields(first: 50) {
+                nodes {
+                  ... on ProjectV2SingleSelectField {
+                    id
+                    name
+                    options {
+                      id
+                      name
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      `,
+      { owner, number: projectNumber },
+    );
+
+    return project.user?.projectV2?.fields?.nodes ?? null;
   }
 }

@@ -81,6 +81,7 @@ describe("runCodingAgent", () => {
         mergedPullRequest: false,
         summary: expect.objectContaining({
           editedFiles: ["src/utils/add.ts"],
+          pullRequestUrls: [],
         }),
       }),
     );
@@ -231,6 +232,37 @@ describe("runCodingAgent", () => {
         }),
       }),
     );
+  });
+
+  it("captures created pull request urls from command output", async () => {
+    startThreadMock.mockReturnValue({ runStreamed: runStreamedMock });
+    runStreamedMock.mockResolvedValue(createEventStream([
+      {
+        type: "item.completed",
+        item: {
+          id: "1",
+          type: "command_execution",
+          command: "gh pr create --fill",
+          exit_code: 0,
+          aggregated_output: "https://github.com/Evolvo-org/evolvo-ts/pull/44",
+        },
+      },
+      {
+        type: "item.completed",
+        item: {
+          id: "2",
+          type: "file_change",
+          status: "completed",
+          changes: [{ kind: "update", path: "src/main.ts" }],
+        },
+      },
+    ]));
+
+    const { runCodingAgent } = await import("./runCodingAgent.js");
+    const result = await runCodingAgent("Update src/main.ts");
+
+    expect(result.summary.pullRequestCreated).toBe(true);
+    expect(result.summary.pullRequestUrls).toEqual(["https://github.com/Evolvo-org/evolvo-ts/pull/44"]);
   });
 
   it("logs command, exit code, and duration for command executions", async () => {

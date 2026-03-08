@@ -39,8 +39,9 @@ export type CodingAgentRunSummary = {
   editedFiles: string[];
   validationCommands: CommandExecutionSummary[];
   failedValidationCommands: CommandExecutionSummary[];
-  reviewOutcome: "accepted" | "amended";
+  reviewOutcome: "accepted" | "amended" | "rejected";
   pullRequestCreated: boolean;
+  pullRequestUrls: string[];
   externalRepositories: string[];
   externalPullRequests: string[];
   mergedExternalPullRequest: boolean;
@@ -432,6 +433,7 @@ async function runCodingAgentWithModel(prompt: string, model: string): Promise<C
   const inspectedAreas = new Set<string>();
   const editedFiles = new Set<string>();
   const externalRepositories = new Set<string>();
+  const pullRequestUrls = new Set<string>();
   const externalPullRequests = new Set<string>();
   const validationCommands: CommandExecutionSummary[] = [];
   const failedValidationCommands: CommandExecutionSummary[] = [];
@@ -452,6 +454,7 @@ async function runCodingAgentWithModel(prompt: string, model: string): Promise<C
     }
 
     for (const pullRequestUrl of extractGitHubPullRequestUrls(text)) {
+      pullRequestUrls.add(pullRequestUrl);
       const pullRequestRepositoryUrl = pullRequestUrl.replace(/\/pull\/\d+$/, "");
       if (isExternalRepositoryUrl(pullRequestRepositoryUrl, internalRepositoryUrls)) {
         externalPullRequests.add(pullRequestUrl);
@@ -596,6 +599,7 @@ async function runCodingAgentWithModel(prompt: string, model: string): Promise<C
         failedValidationCommands,
         reviewOutcome: summarizeReviewOutcome(validationCommands),
         pullRequestCreated: facts.pullRequestCreated,
+        pullRequestUrls: [...pullRequestUrls],
         externalRepositories: [...externalRepositories],
         externalPullRequests: [...externalPullRequests],
         mergedExternalPullRequest: facts.mergedExternalPullRequest,
@@ -619,6 +623,7 @@ async function runCodingAgentWithModel(prompt: string, model: string): Promise<C
       failedValidationCommands,
       reviewOutcome: summarizeReviewOutcome(validationCommands),
       pullRequestCreated: facts.pullRequestCreated,
+      pullRequestUrls: [...pullRequestUrls],
       externalRepositories: [...externalRepositories],
       externalPullRequests: [...externalPullRequests],
       mergedExternalPullRequest: facts.mergedExternalPullRequest,

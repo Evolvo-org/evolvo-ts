@@ -3,6 +3,8 @@ import { pathToFileURL } from "node:url";
 import type { CodingAgentRunResult } from "./agents/runCodingAgent.js";
 import { OPENAI_API_KEY } from "./environment.js";
 import { selectIssueForWorkWithOpenAi } from "./agents/issueSelectionOpenAi.js";
+import { runReleaseAgent } from "./agents/runReleaseAgent.js";
+import { runReviewAgent } from "./agents/reviewAgent.js";
 import { configureCodingAgentExecutionContext, runCodingAgent } from "./agents/runCodingAgent.js";
 import { runPlannerAgent } from "./agents/plannerAgent.js";
 import { WORK_DIR } from "./constants/workDir.js";
@@ -10,6 +12,7 @@ import { GitHubAdminClient } from "./github/githubAdminClient.js";
 import { GitHubClient } from "./github/githubClient.js";
 import { getGitHubConfig } from "./github/githubConfig.js";
 import { GitHubProjectsV2Client } from "./github/githubProjectsV2.js";
+import { GitHubPullRequestClient, parseGitHubPullRequestUrl } from "./github/githubPullRequests.js";
 import {
   buildLifecycleStateComment,
   transitionCanonicalLifecycleState,
@@ -148,6 +151,19 @@ function mapReviewOutcomeToLifecycleState(reviewOutcome: string): "accepted" | "
   }
 
   return "rejected";
+}
+
+function buildPullRequestReviewBody(options: {
+  summary: string;
+  reasons: string[];
+}): string {
+  const lines = [
+    options.summary.trim(),
+    "",
+    "Review reasons:",
+    ...(options.reasons.length > 0 ? options.reasons.map((reason) => `- ${reason}`) : ["- No additional review reasons provided."]),
+  ];
+  return lines.join("\n").trim();
 }
 
 function logUnauthorizedIssueClosure(result: UnauthorizedIssueClosureResult): void {
@@ -442,6 +458,7 @@ export async function main(): Promise<void> {
   const issueManager = new TaskIssueManager(githubClient);
   const adminClient = new GitHubAdminClient(githubClient, githubConfig);
   const projectsClient = new GitHubProjectsV2Client(githubClient);
+  const pullRequestClient = new GitHubPullRequestClient(githubClient);
   const projectRepositoryIssueInspector = new ProjectRepositoryIssueInspector(githubClient);
   const defaultProjectContext = buildDefaultProjectContext({
     owner: GITHUB_OWNER,
@@ -1189,8 +1206,52 @@ export async function main(): Promise<void> {
 
           let mergedDefaultBranch: string | null = null;
           if (runResult) {
+            const primaryPullRequestUrl = runResult.summary.pullRequestUrls[0] ?? null;
+            if (runResult.summary.pullRequestCreated && primaryPullRequestUrl) {
+              const reviewResult = await runReviewAgent({
+                apiKey: OPENAI_API_KEY,
+                workDir: executionContext.project.cwd,
+                issue: {
+                  number: selectedIssue.number,
+                  title: selectedIssue.title,
+                  description: selectedIssue.description,
+                },
+                pullRequestUrl: primaryPullRequestUrl,
+                validationCommands: runResult.summary.validationCommands,
+                failedValidationCommands: runResult.summary.failedValidationCommands,
+                implementationSummary: runResult.summary.finalResponse,
+              });
+              runResult.summary.reviewOutcome = reviewResult.decision === "approve" ? "accepted" : "rejected";
+
+              const parsedPullRequestUrl = parseGitHubPullRequestUrl(primaryPullRequestUrl);
+              if (parsedPullRequestUrl) {
+                await pullRequestClient.submitReview({
+                  owner: parsedPullRequestUrl.owner,
+                  repo: parsedPullRequestUrl.repo,
+                  pullNumber: parsedPullRequestUrl.pullNumber,
+                  event: reviewResult.decision === "approve" ? "APPROVE" : "REQUEST_CHANGES",
+                  body: buildPullRequestReviewBody({
+                    summary: reviewResult.summary,
+                    reasons: reviewResult.reasons,
+                  }),
+                });
+              }
+
+              if (reviewResult.decision === "approve") {
+                mergedDefaultBranch = await tryResolveRepositoryDefaultBranch(executionContext.project.cwd);
+                const releaseResult = await runReleaseAgent({
+                  workDir: executionContext.project.cwd,
+                  pullRequestUrl: primaryPullRequestUrl,
+                  defaultBranch: mergedDefaultBranch,
+                });
+                runResult.mergedPullRequest = releaseResult.mergedPullRequest;
+              }
+            } else if (runResult.summary.pullRequestCreated) {
+              runResult.summary.reviewOutcome = "rejected";
+            }
+
             mergedDefaultBranch = runResult.mergedPullRequest
-              ? await tryResolveRepositoryDefaultBranch(executionContext.project.cwd)
+              ? mergedDefaultBranch ?? await tryResolveRepositoryDefaultBranch(executionContext.project.cwd)
               : null;
             if (isTrackerIssue(selectedIssue)) {
               await transitionIssueLifecycleState(issueManager, {

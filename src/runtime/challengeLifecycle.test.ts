@@ -66,6 +66,7 @@ function createRunResult(overrides: Partial<CodingAgentRunResult["summary"]> = {
       failedValidationCommands: [],
       reviewOutcome: "accepted",
       pullRequestCreated: true,
+      pullRequestUrls: [],
       externalRepositories: [],
       externalPullRequests: [],
       mergedExternalPullRequest: false,
