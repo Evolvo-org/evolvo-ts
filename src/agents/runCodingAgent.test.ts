@@ -35,6 +35,8 @@ function createEventStream(events: unknown[]) {
 }
 
 describe("runCodingAgent", () => {
+  const defaultWorkDir = process.cwd();
+
   beforeEach(() => {
     startThreadMock.mockReset();
     runStreamedMock.mockReset();
@@ -88,7 +90,7 @@ describe("runCodingAgent", () => {
       model: "gpt-5.3-codex",
       sandboxMode: "workspace-write",
       skipGitRepoCheck: true,
-      workingDirectory: "/home/paddy/evolvo-ts",
+      workingDirectory: defaultWorkDir,
     });
     expect(runStreamedMock).toHaveBeenCalledWith("PROMPT:Create src/utils/add.ts");
   });
@@ -135,13 +137,13 @@ describe("runCodingAgent", () => {
       model: "gpt-5.3-codex",
       sandboxMode: "workspace-write",
       skipGitRepoCheck: true,
-      workingDirectory: "/home/paddy/evolvo-ts",
+      workingDirectory: defaultWorkDir,
     });
     expect(startThreadMock).toHaveBeenNthCalledWith(2, {
       model: "gpt-5.4",
       sandboxMode: "workspace-write",
       skipGitRepoCheck: true,
-      workingDirectory: "/home/paddy/evolvo-ts",
+      workingDirectory: defaultWorkDir,
     });
     expect(console.log).toHaveBeenCalledWith("[coding-agent] starting model=gpt-5.3-codex");
     expect(console.log).toHaveBeenCalledWith(
