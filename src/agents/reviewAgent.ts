@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import type { CommandExecutionSummary } from "./runCodingAgent.js";
+import { extractResponseOutputText } from "./extractResponseOutputText.js";
 import { resolveRepositoryDefaultBranch } from "../runtime/defaultBranch.js";
 
 const execFileAsync = promisify(execFile);
@@ -183,11 +184,15 @@ export async function runReviewAgent(input: ReviewAgentInput): Promise<ReviewAge
 
   const payload = await response.json() as {
     output_text?: unknown;
+    output?: Array<{
+      type?: string;
+      content?: Array<{ type?: string; text?: string; refusal?: string }>;
+    }>;
+    status?: string;
+    error?: { message?: string } | null;
+    incomplete_details?: { reason?: string } | null;
   };
-  const finalResponse = typeof payload.output_text === "string" ? payload.output_text : "";
-  if (!finalResponse.trim()) {
-    throw new Error("Review agent response did not include output_text.");
-  }
+  const finalResponse = extractResponseOutputText(payload, "Review agent");
 
   return parseReviewResponse(finalResponse);
 }

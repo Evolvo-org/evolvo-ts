@@ -65,4 +65,64 @@ describe("runPlanningStageAgent", () => {
       },
     ]);
   });
+
+  it("parses assistant output from the output message content when output_text is absent", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        output: [
+          {
+            type: "message",
+            content: [
+              {
+                type: "output_text",
+                text: JSON.stringify({
+                  actions: [
+                    {
+                      issueNumber: 21,
+                      decision: "blocked",
+                      title: "Clarify release-stage board transitions",
+                      description: "The issue depends on unresolved release ownership and should be blocked.",
+                      splitIssues: [],
+                      reasons: ["Release ownership is still undefined."],
+                    },
+                  ],
+                }),
+              },
+            ],
+          },
+        ],
+      }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await runPlanningStageAgent({
+      apiKey: "test-key",
+      projectSlug: "evolvo",
+      projectDisplayName: "Evolvo",
+      repository: "Evolvo-org/evolvo-ts",
+      maxIssues: 10,
+      planningIssues: [
+        {
+          number: 21,
+          title: "Release stage transitions",
+          description: "Need to define this properly",
+          stage: "Planning",
+        },
+      ],
+      openIssueTitles: [],
+      recentClosedIssueTitles: [],
+    });
+
+    expect(result).toEqual([
+      {
+        issueNumber: 21,
+        decision: "blocked",
+        title: "Clarify release-stage board transitions",
+        description: "The issue depends on unresolved release ownership and should be blocked.",
+        splitIssues: [],
+        reasons: ["Release ownership is still undefined."],
+      },
+    ]);
+  });
 });

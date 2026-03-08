@@ -1,3 +1,5 @@
+import { extractResponseOutputText } from "./extractResponseOutputText.js";
+
 const OPENAI_RESPONSES_API_URL = "https://api.openai.com/v1/responses";
 export const ISSUE_GENERATOR_OPENAI_MODEL = "gpt-5.3-codex";
 
@@ -148,11 +150,17 @@ export async function runIssueGeneratorAgent(input: {
     throw new Error(`Issue generator request failed with status ${response.status}: ${await response.text()}`);
   }
 
-  const payload = await response.json() as { output_text?: unknown };
-  const finalResponse = typeof payload.output_text === "string" ? payload.output_text : "";
-  if (!finalResponse.trim()) {
-    throw new Error("Issue generator response did not include output_text.");
-  }
+  const payload = await response.json() as {
+    output_text?: unknown;
+    output?: Array<{
+      type?: string;
+      content?: Array<{ type?: string; text?: string; refusal?: string }>;
+    }>;
+    status?: string;
+    error?: { message?: string } | null;
+    incomplete_details?: { reason?: string } | null;
+  };
+  const finalResponse = extractResponseOutputText(payload, "Issue generator");
 
   return parseResponse(finalResponse);
 }

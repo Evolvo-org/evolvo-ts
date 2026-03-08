@@ -46,4 +46,54 @@ describe("runIssueGeneratorAgent", () => {
     ]);
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
+
+  it("parses assistant output from the output message content when output_text is absent", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        output: [
+          {
+            type: "message",
+            content: [
+              {
+                type: "output_text",
+                text: JSON.stringify({
+                  issues: [
+                    {
+                      title: "Add scheduler health logging",
+                      description: "Emit backlog and agent scheduling summaries at the end of each workflow cycle.",
+                    },
+                  ],
+                }),
+              },
+            ],
+          },
+        ],
+      }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await runIssueGeneratorAgent({
+      apiKey: "test-key",
+      projectSlug: "evolvo",
+      projectDisplayName: "Evolvo",
+      repository: "Evolvo-org/evolvo-ts",
+      counts: {
+        inbox: 0,
+        planning: 0,
+        readyForDev: 0,
+        inDev: 0,
+      },
+      openIssueTitles: [],
+      recentClosedIssueTitles: [],
+      maxIssues: 5,
+    });
+
+    expect(result).toEqual([
+      {
+        title: "Add scheduler health logging",
+        description: "Emit backlog and agent scheduling summaries at the end of each workflow cycle.",
+      },
+    ]);
+  });
 });

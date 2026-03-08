@@ -1,3 +1,5 @@
+import { extractResponseOutputText } from "./extractResponseOutputText.js";
+
 const OPENAI_RESPONSES_API_URL = "https://api.openai.com/v1/responses";
 export const PLANNING_STAGE_OPENAI_MODEL = "gpt-5.4";
 
@@ -205,11 +207,17 @@ export async function runPlanningStageAgent(input: {
     throw new Error(`Planning stage agent request failed with status ${response.status}: ${await response.text()}`);
   }
 
-  const payload = await response.json() as { output_text?: unknown };
-  const finalResponse = typeof payload.output_text === "string" ? payload.output_text : "";
-  if (!finalResponse.trim()) {
-    throw new Error("Planning stage agent response did not include output_text.");
-  }
+  const payload = await response.json() as {
+    output_text?: unknown;
+    output?: Array<{
+      type?: string;
+      content?: Array<{ type?: string; text?: string; refusal?: string }>;
+    }>;
+    status?: string;
+    error?: { message?: string } | null;
+    incomplete_details?: { reason?: string } | null;
+  };
+  const finalResponse = extractResponseOutputText(payload, "Planning stage agent");
 
   return parsePlanningResponse(finalResponse);
 }
