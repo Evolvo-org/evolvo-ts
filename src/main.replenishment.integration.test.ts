@@ -44,6 +44,7 @@ type MockIssue = {
   body: string;
   state: "open" | "closed";
   labels: Array<{ name: string }>;
+  user?: { login?: string | null };
   pull_request?: unknown;
 };
 
@@ -107,6 +108,15 @@ function parseIssueNumberFromPath(path: string): number {
   }
 
   return Number(match[1]);
+}
+
+function withApprovedAuthor<T extends MockIssue>(issue: T): T & { user: { login: string } } {
+  return {
+    ...issue,
+    user: {
+      login: issue.user?.login?.trim() || "evolvo-auto",
+    },
+  };
 }
 
 async function resetRuntimeState(): Promise<void> {
@@ -227,15 +237,19 @@ vi.mock("./github/githubClient.js", async () => {
   class FakeGitHubClient {
     public async get<T>(path: string): Promise<T> {
       if (path.startsWith("?state=open")) {
-        return mockApiState.issues.filter((issue) => issue.state === "open") as T;
+        return mockApiState.issues
+          .filter((issue) => issue.state === "open")
+          .map((issue) => withApprovedAuthor(issue)) as T;
       }
 
       if (path.startsWith("?state=closed")) {
-        return mockApiState.issues.filter((issue) => issue.state === "closed") as T;
+        return mockApiState.issues
+          .filter((issue) => issue.state === "closed")
+          .map((issue) => withApprovedAuthor(issue)) as T;
       }
 
       if (path.startsWith("/")) {
-        return findIssue(parseIssueNumberFromPath(path)) as T;
+        return withApprovedAuthor(findIssue(parseIssueNumberFromPath(path))) as T;
       }
 
       throw new Error(`Unsupported GET path in fake GitHub client: ${path}`);
@@ -249,6 +263,7 @@ vi.mock("./github/githubClient.js", async () => {
           body: body.body ?? "",
           state: "open",
           labels: [],
+          user: { login: "evolvo-auto" },
         };
         mockApiState.nextIssueNumber += 1;
         mockApiState.issues.push(issue);

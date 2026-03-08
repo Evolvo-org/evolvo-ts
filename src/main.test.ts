@@ -8,6 +8,7 @@ const replenishSelfImprovementIssuesMock = vi.fn();
 const runIssueCommandMock = vi.fn();
 const getGitHubConfigMock = vi.fn();
 const listOpenIssuesMock = vi.fn();
+const unauthorizedIssueClosuresMock = vi.fn();
 const markInProgressMock = vi.fn();
 const markCompletedMock = vi.fn();
 const addProgressCommentMock = vi.fn();
@@ -222,6 +223,10 @@ vi.mock("./github/githubClient.js", async () => {
 
 vi.mock("./issues/taskIssueManager.js", () => ({
   TaskIssueManager: class {
+    listAuthorizedOpenIssues = async () => ({
+      issues: await listOpenIssuesMock(),
+      unauthorizedClosures: await unauthorizedIssueClosuresMock(),
+    });
     listOpenIssues = listOpenIssuesMock;
     markInProgress = markInProgressMock;
     markCompleted = markCompletedMock;
@@ -350,6 +355,8 @@ describe("main", () => {
     });
     listOpenIssuesMock.mockReset();
     listOpenIssuesMock.mockResolvedValue([]);
+    unauthorizedIssueClosuresMock.mockReset();
+    unauthorizedIssueClosuresMock.mockResolvedValue([]);
     markInProgressMock.mockReset();
     markInProgressMock.mockResolvedValue({ ok: true, message: "ok" });
     markCompletedMock.mockReset();
@@ -516,6 +523,33 @@ describe("main", () => {
       }),
     );
     expect(stopDiscordGracefulShutdownListenerMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("logs and excludes unauthorized issues before normal selection", async () => {
+    listOpenIssuesMock.mockResolvedValueOnce([]);
+    unauthorizedIssueClosuresMock.mockResolvedValueOnce([
+      {
+        issueNumber: 91,
+        issueTitle: "Untrusted task",
+        authorLogin: "intruder-user",
+        commentAdded: true,
+        closed: true,
+        closeMessage: "Issue #91 closed successfully.",
+        commentMessage: "Added unauthorized-author closure comment to issue #91.",
+      },
+    ]);
+    const { DEFAULT_PROMPT, main } = await import("./main.js");
+
+    await main();
+
+    expect(runCodingAgentMock).not.toHaveBeenCalled();
+    expect(console.log).toHaveBeenCalledWith(
+      "Unauthorized issue #91 Untrusted task by intruder-user closed automatically.",
+    );
+    expect(console.log).toHaveBeenCalledWith(
+      "Added unauthorized-author closure comment to issue #91.",
+    );
+    expect(console.log).toHaveBeenCalledWith(DEFAULT_PROMPT);
   });
 
   it("processes provisioning issues without invoking the coding agent", async () => {

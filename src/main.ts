@@ -61,7 +61,11 @@ import {
 } from "./runtime/challengeLifecycle.js";
 import { runIssueCommand } from "./issues/runIssueCommand.js";
 import { hasIssueLabel, isChallengeIssue } from "./issues/challengeIssue.js";
-import { TaskIssueManager, type IssueSummary } from "./issues/taskIssueManager.js";
+import {
+  TaskIssueManager,
+  type IssueSummary,
+  type UnauthorizedIssueClosureResult,
+} from "./issues/taskIssueManager.js";
 import {
   buildProjectProvisioningCompletionSummary,
   buildProjectProvisioningOutcomeComment,
@@ -117,6 +121,21 @@ function mapReviewOutcomeToLifecycleState(reviewOutcome: string): "accepted" | "
   }
 
   return "rejected";
+}
+
+function logUnauthorizedIssueClosure(result: UnauthorizedIssueClosureResult): void {
+  const authorLogin = result.authorLogin ?? "unknown";
+  const actionSummary = result.closed ? "closed automatically" : "could not be closed automatically";
+  console.log(`Unauthorized issue #${result.issueNumber} ${result.issueTitle} by ${authorLogin} ${actionSummary}.`);
+
+  if (result.commentMessage) {
+    const log = result.commentAdded ? console.log : console.error;
+    log(result.commentMessage);
+  }
+
+  if (!result.closed) {
+    console.error(result.closeMessage);
+  }
 }
 
 async function transitionIssueLifecycleState(
@@ -330,7 +349,11 @@ export async function main(): Promise<void> {
       let retryAttempt = 0;
       while (true) {
         try {
-          const openIssues = await issueManager.listOpenIssues();
+          const authorizedOpenIssueInventory = await issueManager.listAuthorizedOpenIssues();
+          const openIssues = authorizedOpenIssueInventory.issues;
+          for (const unauthorizedClosure of authorizedOpenIssueInventory.unauthorizedClosures) {
+            logUnauthorizedIssueClosure(unauthorizedClosure);
+          }
           const actionableIssues: IssueSummary[] = [];
 
           for (const issue of openIssues) {

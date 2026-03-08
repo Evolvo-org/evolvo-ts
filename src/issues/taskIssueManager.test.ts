@@ -12,6 +12,7 @@ type MockIssue = {
   body: string;
   state: "open" | "closed";
   labels: Array<{ name: string }>;
+  user?: { login?: string | null };
   pull_request?: unknown;
 };
 
@@ -22,6 +23,7 @@ function createIssue(overrides: Partial<MockIssue> = {}): MockIssue {
     body: "Description",
     state: "open",
     labels: [],
+    user: { login: "evolvo-auto" },
     ...overrides,
   };
 }
@@ -100,6 +102,77 @@ describe("TaskIssueManager", () => {
       ...Array.from({ length: 3 }, (_, index) => index + 1),
       ...Array.from({ length: 96 }, (_, index) => index + 5),
       101,
+    ]);
+  });
+
+  it("returns only authorized open issues and closes unauthorized ones", async () => {
+    const client = createClientMock();
+    client.get.mockResolvedValue([
+      createIssue({ number: 1, title: "Allowed issue", user: { login: "evolvo-auto" } }),
+      createIssue({ number: 2, title: "Unauthorized issue", user: { login: "intruder-user" } }),
+    ]);
+    client.post.mockResolvedValue({});
+    client.patch.mockResolvedValue(createIssue({
+      number: 2,
+      title: "Unauthorized issue",
+      state: "closed",
+      user: { login: "intruder-user" },
+    }));
+    const manager = new TaskIssueManager(client as never);
+
+    const result = await manager.listAuthorizedOpenIssues();
+
+    expect(result.issues).toEqual([
+      {
+        number: 1,
+        title: "Allowed issue",
+        description: "Description",
+        state: "open",
+        labels: [],
+      },
+    ]);
+    expect(result.unauthorizedClosures).toEqual([
+      {
+        issueNumber: 2,
+        issueTitle: "Unauthorized issue",
+        authorLogin: "intruder-user",
+        commentAdded: true,
+        closed: true,
+        closeMessage: "Issue #2 closed successfully.",
+        commentMessage: "Added unauthorized-author closure comment to issue #2.",
+      },
+    ]);
+    expect(client.post).toHaveBeenCalledWith(
+      "/2/comments",
+      expect.objectContaining({
+        body: expect.stringContaining("Evolvo only accepts work from approved issue authors"),
+      }),
+    );
+    expect(client.patch).toHaveBeenCalledWith("/2", { state: "closed" });
+  });
+
+  it("treats missing or uncloseable unauthorized authors as unauthorized and reports the failure", async () => {
+    const client = createClientMock();
+    client.get.mockResolvedValue([
+      createIssue({ number: 3, title: "Unknown author issue", user: { login: null } }),
+    ]);
+    client.post.mockRejectedValueOnce(new Error("comment denied"));
+    client.patch.mockRejectedValueOnce(new Error("close denied"));
+    const manager = new TaskIssueManager(client as never);
+
+    const result = await manager.listAuthorizedOpenIssues();
+
+    expect(result.issues).toEqual([]);
+    expect(result.unauthorizedClosures).toEqual([
+      {
+        issueNumber: 3,
+        issueTitle: "Unknown author issue",
+        authorLogin: null,
+        commentAdded: false,
+        closed: false,
+        closeMessage: "Failed to close issue #3: close denied",
+        commentMessage: "Failed to add unauthorized-author closure comment to issue #3: comment denied",
+      },
     ]);
   });
 
