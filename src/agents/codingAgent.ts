@@ -378,6 +378,7 @@ export const CODING_AGENT_THREAD_OPTIONS: ThreadOptions = {
   model: "gpt-5.4",
   sandboxMode: "workspace-write",
   workingDirectory: WORK_DIR,
+  skipGitRepoCheck: true,
   networkAccessEnabled: true,
   webSearchEnabled: true,
   approvalPolicy: "never",

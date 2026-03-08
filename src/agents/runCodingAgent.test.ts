@@ -12,8 +12,12 @@ vi.mock("@openai/codex-sdk", () => ({
 }));
 
 vi.mock("./codingAgent.js", () => ({
-  CODING_AGENT_THREAD_OPTIONS: { sandboxMode: "workspace-write" },
-  buildCodingAgentThreadOptions: (workDir: string) => ({ sandboxMode: "workspace-write", workingDirectory: workDir }),
+  CODING_AGENT_THREAD_OPTIONS: { sandboxMode: "workspace-write", skipGitRepoCheck: true },
+  buildCodingAgentThreadOptions: (workDir: string) => ({
+    sandboxMode: "workspace-write",
+    skipGitRepoCheck: true,
+    workingDirectory: workDir,
+  }),
   buildCodingPrompt: buildCodingPromptMock,
 }));
 
@@ -460,6 +464,7 @@ describe("runCodingAgent", () => {
 
     expect(startThreadMock).toHaveBeenCalledWith({
       sandboxMode: "workspace-write",
+      skipGitRepoCheck: true,
       workingDirectory: "/home/paddy/habit-cli",
     });
     expect(result.summary.externalRepositories).toEqual([]);

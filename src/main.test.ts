@@ -1890,17 +1890,17 @@ describe("main", () => {
 
     await main();
 
-    expect(requestCycleLimitDecisionFromOperatorMock).toHaveBeenCalledWith(5);
+    expect(requestCycleLimitDecisionFromOperatorMock).toHaveBeenCalledWith(10);
     expect(console.log).toHaveBeenCalledWith(
-      "Operator decision via Discord: continue (+2 cycles). New limit=7.",
+      "Operator decision via Discord: continue (+2 cycles). New limit=12.",
     );
     expect(notifyCycleLimitDecisionAppliedInDiscordMock).toHaveBeenCalledWith({
       decision: "continue",
-      currentLimit: 5,
+      currentLimit: 10,
       additionalCycles: 2,
-      newLimit: 7,
+      newLimit: 12,
     });
-    expect(runCodingAgentMock).toHaveBeenCalledTimes(6);
+    expect(runCodingAgentMock).toHaveBeenCalledTimes(11);
   });
 
   it("quits cleanly at cycle limit when Discord operator chooses quit", async () => {
@@ -1916,12 +1916,12 @@ describe("main", () => {
 
     await main();
 
-    expect(requestCycleLimitDecisionFromOperatorMock).toHaveBeenCalledWith(5);
+    expect(requestCycleLimitDecisionFromOperatorMock).toHaveBeenCalledWith(10);
     expect(console.error).toHaveBeenCalledWith("Operator decision via Discord: quit.");
-    expect(console.error).toHaveBeenCalledWith("Reached the maximum number of issue cycles (5).");
+    expect(console.error).toHaveBeenCalledWith("Reached the maximum number of issue cycles (10).");
     expect(notifyCycleLimitDecisionAppliedInDiscordMock).toHaveBeenCalledWith({
       decision: "quit",
-      currentLimit: 5,
+      currentLimit: 10,
     });
   });
 
@@ -1933,10 +1933,10 @@ describe("main", () => {
 
     await main();
 
-    expect(requestCycleLimitDecisionFromOperatorMock).toHaveBeenCalledWith(5);
-    expect(console.error).toHaveBeenCalledWith("Reached the maximum number of issue cycles (5).");
+    expect(requestCycleLimitDecisionFromOperatorMock).toHaveBeenCalledWith(10);
+    expect(console.error).toHaveBeenCalledWith("Reached the maximum number of issue cycles (10).");
     expect(notifyRuntimeQuittingInDiscordMock).toHaveBeenCalledWith(
-      "Cycle limit of 5 was reached and no continue decision was applied.",
+      "Cycle limit of 10 was reached and no continue decision was applied.",
     );
   });
 

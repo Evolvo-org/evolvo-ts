@@ -68,6 +68,7 @@ describe("buildCodingPrompt", () => {
 
   it("keeps Codex configured for workspace-write execution", () => {
     expect(CODING_AGENT_THREAD_OPTIONS.sandboxMode).toBe("workspace-write");
+    expect(CODING_AGENT_THREAD_OPTIONS.skipGitRepoCheck).toBe(true);
     expect(CODING_AGENT_THREAD_OPTIONS.approvalPolicy).toBe("never");
   });
 
