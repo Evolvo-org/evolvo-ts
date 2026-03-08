@@ -33,6 +33,15 @@ function normalizeNonEmptyString(value: unknown): string | null {
   return normalized.length > 0 ? normalized : null;
 }
 
+function requireNonEmptyInput(value: string, label: "slug" | "requestedBy"): string {
+  const normalized = value.trim();
+  if (normalized.length === 0) {
+    throw new Error(`Active project state ${label} cannot be empty.`);
+  }
+
+  return normalized;
+}
+
 function normalizeSource(value: unknown): ActiveProjectStateSource | null {
   if (
     value === "start-project-command" ||
@@ -140,12 +149,15 @@ export async function setActiveProjectState(options: {
   source: ActiveProjectStateSource;
   updatedAt?: string;
 }): Promise<ActiveProjectState> {
+  const activeProjectSlug = requireNonEmptyInput(options.slug, "slug");
+  const requestedBy = requireNonEmptyInput(options.requestedBy, "requestedBy");
+
   return writeActiveProjectState(options.workDir, {
     version: ACTIVE_PROJECT_STATE_VERSION,
-    activeProjectSlug: options.slug.trim(),
+    activeProjectSlug,
     selectionState: "active",
     updatedAt: options.updatedAt?.trim() || new Date().toISOString(),
-    requestedBy: options.requestedBy.trim(),
+    requestedBy,
     source: options.source,
   });
 }
@@ -173,12 +185,13 @@ export async function stopActiveProjectState(options: {
     };
   }
 
+  const requestedBy = requireNonEmptyInput(options.requestedBy, "requestedBy");
   const nextState: ActiveProjectState = {
     version: ACTIVE_PROJECT_STATE_VERSION,
     activeProjectSlug: currentState.activeProjectSlug,
     selectionState: "stopped",
     updatedAt: options.updatedAt?.trim() || new Date().toISOString(),
-    requestedBy: options.requestedBy.trim(),
+    requestedBy,
     source: "stop-project-command",
   };
   await writeActiveProjectState(options.workDir, nextState);
