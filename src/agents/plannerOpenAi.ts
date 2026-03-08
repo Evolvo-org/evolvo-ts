@@ -11,7 +11,15 @@ const PLANNER_MAX_TOOL_ROUNDS = 8;
 const PLANNER_REPOSITORY_LIST_LIMIT = 200;
 const PLANNER_REPOSITORY_READ_LINE_LIMIT = 400;
 const PLANNER_REPOSITORY_SEARCH_LIMIT = 50;
-const PLANNER_IGNORED_DIRECTORY_NAMES = new Set([".git", "node_modules", "dist"]);
+const PLANNER_IGNORED_DIRECTORY_NAMES = new Set([
+  ".git",
+  "node_modules",
+  "dist",
+  ".evolvo",
+  "build",
+  "coverage",
+  ".turbo",
+]);
 
 const PLANNER_SYSTEM_INSTRUCTIONS = [
   "You are Evolvo's repository planner.",
@@ -501,6 +509,14 @@ async function searchRepositoryWithRipgrep(options: {
     "!node_modules/**",
     "--glob",
     "!dist/**",
+    "--glob",
+    "!.evolvo/**",
+    "--glob",
+    "!build/**",
+    "--glob",
+    "!coverage/**",
+    "--glob",
+    "!.turbo/**",
     "--regexp",
     options.query,
     relativePath,
