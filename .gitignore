@@ -143,3 +143,6 @@ vite.config.ts.timestamp-*
 
 # Evolvo files
 .evolvo/
+.evolvo/discord-control-cursor.json
+.evolvo/projects.json
+.evolvo/runtime-lifecycle-state.json
