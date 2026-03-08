@@ -1,5 +1,7 @@
 import { Codex, Thread, type ThreadItem } from "@openai/codex-sdk";
 import {
+  DEFAULT_CODING_AGENT_MODEL,
+  ESCALATED_CODING_AGENT_MODEL,
   buildCodingAgentThreadOptions,
   buildCodingPrompt,
 } from "./codingAgent.js";
@@ -14,6 +16,7 @@ const INSPECTION_GIT_SUBCOMMAND_NAMES = new Set(["status", "diff", "show"]);
 const VALIDATION_COMMAND_NAMES = new Set(["vitest", "jest", "tsc", "pytest"]);
 const PACKAGE_MANAGER_COMMAND_NAMES = new Set(["pnpm", "npm", "yarn", "bun"]);
 const VALIDATION_SCRIPT_NAMES = new Set(["validate", "test", "typecheck", "lint", "build"]);
+const CODING_AGENT_NO_EDIT_ERROR = "The Codex run did not make repository edits for a file-edit request.";
 
 export type CodingAgentRunResult = {
   mergedPullRequest: boolean;
@@ -104,14 +107,19 @@ function getExecutionContext(): CodingAgentExecutionContext {
   };
 }
 
-function getThread(workDir: string): Thread {
-  const existingThread = activeThreads.get(workDir);
+function buildThreadCacheKey(workDir: string, model: string): string {
+  return `${model}:${workDir}`;
+}
+
+function getThread(workDir: string, model: string): Thread {
+  const cacheKey = buildThreadCacheKey(workDir, model);
+  const existingThread = activeThreads.get(cacheKey);
   if (existingThread) {
     return existingThread;
   }
 
-  const nextThread = codex.startThread(buildCodingAgentThreadOptions(workDir));
-  activeThreads.set(workDir, nextThread);
+  const nextThread = codex.startThread(buildCodingAgentThreadOptions(workDir, model));
+  activeThreads.set(cacheKey, nextThread);
   return nextThread;
 }
 
@@ -413,12 +421,9 @@ function logStartedItem(item: ThreadItem): void {
   }
 }
 
-export async function runCodingAgent(prompt: string): Promise<CodingAgentRunResult> {
-  console.log("=== Run starting ===");
-  console.log(`[user] ${prompt}\n`);
-
+async function runCodingAgentWithModel(prompt: string, model: string): Promise<CodingAgentRunResult> {
   const executionContext = getExecutionContext();
-  const thread = getThread(executionContext.workDir);
+  const thread = getThread(executionContext.workDir, model);
   const { events } = await thread.runStreamed(buildCodingPrompt(prompt));
 
   const startedItems = new Set<string>();
@@ -602,7 +607,7 @@ export async function runCodingAgent(prompt: string): Promise<CodingAgentRunResu
   console.log("\n[file_change] No repository edits were detected.");
 
   if (isFileEditRequest(prompt)) {
-    throw new Error("The Codex run did not make repository edits for a file-edit request.");
+    throw new Error(CODING_AGENT_NO_EDIT_ERROR);
   }
 
   return {
@@ -620,4 +625,30 @@ export async function runCodingAgent(prompt: string): Promise<CodingAgentRunResu
       finalResponse,
     },
   };
+}
+
+function shouldEscalateCodingModel(prompt: string, error: unknown): boolean {
+  return isFileEditRequest(prompt)
+    && error instanceof Error
+    && error.message === CODING_AGENT_NO_EDIT_ERROR;
+}
+
+export async function runCodingAgent(prompt: string): Promise<CodingAgentRunResult> {
+  console.log("=== Run starting ===");
+  console.log(`[coding-agent] starting model=${DEFAULT_CODING_AGENT_MODEL}`);
+  console.log(`[user] ${prompt}\n`);
+
+  try {
+    return await runCodingAgentWithModel(prompt, DEFAULT_CODING_AGENT_MODEL);
+  } catch (error) {
+    if (!shouldEscalateCodingModel(prompt, error)) {
+      throw error;
+    }
+
+    const reason = error instanceof Error ? error.message : "unknown error";
+    console.log(
+      `[coding-agent] escalating model from ${DEFAULT_CODING_AGENT_MODEL} to ${ESCALATED_CODING_AGENT_MODEL}: ${reason}`,
+    );
+    return runCodingAgentWithModel(prompt, ESCALATED_CODING_AGENT_MODEL);
+  }
 }
