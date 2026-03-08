@@ -221,7 +221,9 @@ async function runPlannerPass(options: {
       }
 
       if (action.decision === "planning" || boardItem.stage === "Inbox") {
-        if (boardItem.stage === "Inbox" && remainingPlanningCapacity <= 0) {
+        const allowPlanningOverflow = action.splitIssues.length > 0;
+
+        if (boardItem.stage === "Inbox" && remainingPlanningCapacity <= 0 && !allowPlanningOverflow) {
           logAgent(
             projectInventory.project,
             "planner",
@@ -236,7 +238,9 @@ async function runPlannerPass(options: {
             to: "Planning",
             reason: action.reasons.join("; "),
           });
-          remainingPlanningCapacity -= 1;
+          if (remainingPlanningCapacity > 0) {
+            remainingPlanningCapacity -= 1;
+          }
           movedToPlanning += 1;
           logAgent(projectInventory.project, "planner", `planned #${action.issueNumber} and moved it to Planning.`);
         } else {

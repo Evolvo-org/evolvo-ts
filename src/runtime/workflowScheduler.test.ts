@@ -460,6 +460,7 @@ describe("runWorkflowSchedulerCycle", () => {
     const { runWorkflowSchedulerCycle } = await import("./workflowScheduler.js");
     const project = createProject();
     const initialInventory = createInventory(project, [
+      createItem(project, 29, "Inbox"),
       createItem(project, 30, "Planning"),
       createItem(project, 31, "Planning"),
       createItem(project, 32, "Planning"),
@@ -467,6 +468,7 @@ describe("runWorkflowSchedulerCycle", () => {
       createItem(project, 34, "Planning"),
     ]);
     const postSplitInventory = createInventory(project, [
+      createItem(project, 29, "Planning"),
       createItem(project, 30, "Planning"),
       createItem(project, 31, "Planning"),
       createItem(project, 32, "Planning"),
@@ -480,7 +482,7 @@ describe("runWorkflowSchedulerCycle", () => {
       .mockResolvedValueOnce(postSplitInventory);
     runPlanningStageAgentMock.mockResolvedValue([
       {
-        issueNumber: 30,
+        issueNumber: 29,
         decision: "planning",
         title: "Split parent",
         description: "Parent issue refined.",
@@ -524,7 +526,8 @@ describe("runWorkflowSchedulerCycle", () => {
       pullRequestClient: { submitReview: vi.fn() } as never,
     });
 
-    expect(result.summary.plannerMovedToPlanning).toBe(2);
+    expect(result.summary.plannerMovedToPlanning).toBe(3);
+    expect(moveProjectItemToStage).toHaveBeenCalledWith(project, "item-29", "Planning");
     expect(moveProjectItemToStage).toHaveBeenCalledWith(project, "item-201", "Planning");
     expect(moveProjectItemToStage).toHaveBeenCalledWith(project, "item-202", "Planning");
   });
