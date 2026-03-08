@@ -72,16 +72,15 @@ When configured, if Evolvo reaches its cycle limit it posts a control prompt in 
 Outside the cycle-limit prompt, the live bot session now registers guild slash commands in the configured Discord server:
 
 - `/quit mode:after-current-task|after-tasks`
-- `/startproject name:<project-name>`
-- `/stopproject mode:now|when-project-complete`
+- `/startproject existing project:<registered-project>`
+- `/stopproject project:<registered-project> mode:now|whenComplete`
 
 Plain-text channel messages remain available as a fallback in the control channel:
 
 - `quit after current task`
 - `quit after tasks`
-- `startProject <project-name>`
-- `stopProject`
-- `stopProject whenProjectComplete`
+- `startProject existing <registered-project>`
+- `stopProject <registered-project> now|whenComplete`
 
 Vitest runs set `EVOLVO_DISCORD_TRANSPORT=disabled`, so automated tests never send live Discord messages and must exercise Discord behavior through mocks, spies, or other controlled doubles.
 

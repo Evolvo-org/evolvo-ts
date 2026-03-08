@@ -1092,27 +1092,30 @@ describe("operatorControl", () => {
     const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
     const onStartProject = vi.fn().mockResolvedValue({
       ok: true,
-      action: "created",
-      message: "Created provisioning issue #556 for project `habit-cli`.",
+      action: "resumed",
+      message: "Resumed existing project `habit-cli`.",
       project: {
         displayName: "Habit CLI",
         slug: "habit-cli",
         repositoryName: "habit-cli",
+        repositoryUrl: "https://github.com/evolvo-auto/habit-cli",
         workspacePath: "/home/paddy/habit-cli",
-        status: "provisioning",
-      },
-      trackerIssue: {
-        number: 556,
-        url: "https://github.com/evolvo-auto/evolvo-ts/issues/556",
-        alreadyOpen: false,
+        status: "active",
       },
     });
+    const onListRegisteredProjects = vi.fn().mockResolvedValue([
+      {
+        slug: "habit-cli",
+        displayName: "Habit CLI",
+        status: "active",
+      },
+    ]);
     const fetchSpy = vi.fn()
       .mockResolvedValueOnce(
         new Response(
           JSON.stringify([
             createDiscordControlMessage(9401, "quit after current task", "operator-1"),
-            createDiscordControlMessage(9402, "startProject Habit CLI", "operator-1"),
+            createDiscordControlMessage(9402, "startProject existing Habit CLI", "operator-1"),
           ]),
           { status: 200 },
         ),
@@ -1122,7 +1125,7 @@ describe("operatorControl", () => {
         new Response(
           JSON.stringify([
             createDiscordControlMessage(9401, "quit after current task", "operator-1"),
-            createDiscordControlMessage(9402, "startProject Habit CLI", "operator-1"),
+            createDiscordControlMessage(9402, "startProject existing Habit CLI", "operator-1"),
           ]),
           { status: 200 },
         ),
@@ -1131,7 +1134,7 @@ describe("operatorControl", () => {
       .mockResolvedValueOnce(new Response(JSON.stringify({ id: "ack-replayed-start-project" }), { status: 200 }));
     vi.stubGlobal("fetch", fetchSpy);
 
-    const firstRequest = await pollDiscordGracefulShutdownCommand(workDir, { onStartProject });
+    const firstRequest = await pollDiscordGracefulShutdownCommand(workDir, { onStartProject, onListRegisteredProjects });
 
     expect(firstRequest).toBeNull();
     expect(await gracefulShutdown.readDiscordControlCursor(workDir)).toBe("9400");
@@ -1142,7 +1145,7 @@ describe("operatorControl", () => {
 
     recordReceiptSpy.mockRestore();
 
-    const replayedRequest = await pollDiscordGracefulShutdownCommand(workDir, { onStartProject });
+    const replayedRequest = await pollDiscordGracefulShutdownCommand(workDir, { onStartProject, onListRegisteredProjects });
 
     expect(replayedRequest).toEqual({
       version: 1,
@@ -1158,7 +1161,7 @@ describe("operatorControl", () => {
     expect(fetchSpy).toHaveBeenCalledTimes(5);
   });
 
-  it("queues an authorized startProject request and acknowledges the created tracker issue", async () => {
+  it("rejects an authorized startProject request when no registered projects are available", async () => {
     const workDir = await createTempWorkDir();
     tempDirs.push(workDir);
     vi.stubEnv("DISCORD_BOT_TOKEN", "bot-token");
@@ -1166,50 +1169,25 @@ describe("operatorControl", () => {
     vi.stubEnv("DISCORD_CONTROL_CHANNEL_ID", "channel-1");
     vi.stubEnv("DISCORD_OPERATOR_USER_ID", "operator-1");
 
-    const onStartProject = vi.fn().mockResolvedValue({
-      ok: true,
-      action: "created",
-      message: "Created provisioning issue #555 for project `habit-cli`. Canonical workspace: `/home/paddy/habit-cli`.",
-      project: {
-        displayName: "Habit CLI",
-        slug: "habit-cli",
-        repositoryName: "habit-cli",
-        workspacePath: "/home/paddy/habit-cli",
-        status: "provisioning",
-      },
-      trackerIssue: {
-        number: 555,
-        url: "https://github.com/evolvo-auto/evolvo-ts/issues/555",
-        alreadyOpen: false,
-      },
-    });
+    const onStartProject = vi.fn();
+    const onListRegisteredProjects = vi.fn().mockResolvedValue([]);
     const fetchSpy = vi.fn()
       .mockResolvedValueOnce(
         new Response(JSON.stringify([{ id: "7100", content: "boot", author: { id: "someone" } }]), { status: 200 }),
       )
       .mockResolvedValueOnce(
         new Response(
-          JSON.stringify([{ id: "7101", content: "startProject Habit CLI", author: { id: "operator-1" } }]),
+          JSON.stringify([{ id: "7101", content: "startProject existing Habit CLI", author: { id: "operator-1" } }]),
           { status: 200 },
         ),
       )
       .mockResolvedValueOnce(new Response(JSON.stringify({ id: "ack-2" }), { status: 200 }));
     vi.stubGlobal("fetch", fetchSpy);
 
-    const request = await pollDiscordGracefulShutdownCommand(workDir, { onStartProject });
+    const request = await pollDiscordGracefulShutdownCommand(workDir, { onStartProject, onListRegisteredProjects });
 
     expect(request).toBeNull();
-    expect(onStartProject).toHaveBeenCalledWith({
-      messageId: "7101",
-      requestedAt: expect.any(String),
-      requestedBy: "discord:operator-1",
-      mode: "legacy",
-      displayName: "Habit CLI",
-      slug: "habit-cli",
-      repositoryName: "habit-cli",
-      issueLabel: "project:habit-cli",
-      workspacePath: "/home/paddy/habit-cli",
-    });
+    expect(onStartProject).not.toHaveBeenCalled();
     expect(fetchSpy).toHaveBeenNthCalledWith(
       3,
       "https://discord.com/api/v10/channels/channel-1/messages",
@@ -1217,12 +1195,10 @@ describe("operatorControl", () => {
         method: "POST",
         body: JSON.stringify({
           content: [
-            "<@operator-1> Created new project for `Habit CLI`.",
-            "Created provisioning issue #555 for project `habit-cli`. Canonical workspace: `/home/paddy/habit-cli`.",
-            "Tracker issue: #555 (https://github.com/evolvo-auto/evolvo-ts/issues/555)",
-            "Planned label: `project:habit-cli`",
-            "Planned repository: `habit-cli`",
-            "Planned workspace: `/home/paddy/habit-cli`",
+            "<@operator-1> Could not queue project start request for `Habit CLI`.",
+            "No registered projects are available to start.",
+            "Usage: `/startproject existing project:<registered-project>`",
+            "Plain-text fallback: `startProject existing <registered-project>`",
           ].join("\n"),
         }),
       }),
@@ -1250,20 +1226,42 @@ describe("operatorControl", () => {
         status: "active",
       },
     });
+    const onListRegisteredProjects = vi.fn().mockResolvedValue([
+      {
+        slug: "habit-cli",
+        displayName: "Habit CLI",
+        status: "active",
+      },
+    ]);
     const fetchSpy = vi.fn()
       .mockResolvedValueOnce(
         new Response(JSON.stringify([{ id: "7150", content: "boot", author: { id: "someone" } }]), { status: 200 }),
       )
       .mockResolvedValueOnce(
         new Response(
-          JSON.stringify([{ id: "7151", content: "startProject Habit CLI", author: { id: "operator-1" } }]),
+          JSON.stringify([{ id: "7151", content: "startProject existing Habit CLI", author: { id: "operator-1" } }]),
           { status: 200 },
         ),
       )
       .mockResolvedValueOnce(new Response(JSON.stringify({ id: "ack-resume" }), { status: 200 }));
     vi.stubGlobal("fetch", fetchSpy);
 
-    await pollDiscordGracefulShutdownCommand(workDir, { onStartProject });
+    await pollDiscordGracefulShutdownCommand(workDir, {
+      onStartProject,
+      onListRegisteredProjects,
+    });
+
+    expect(onStartProject).toHaveBeenCalledWith({
+      messageId: "7151",
+      requestedAt: expect.any(String),
+      requestedBy: "discord:operator-1",
+      mode: "existing",
+      displayName: "Habit CLI",
+      slug: "habit-cli",
+      repositoryName: "habit-cli",
+      issueLabel: "project:habit-cli",
+      workspacePath: "/home/paddy/habit-cli",
+    });
 
     expect(fetchSpy).toHaveBeenNthCalledWith(
       3,
@@ -1294,26 +1292,36 @@ describe("operatorControl", () => {
     const onStopProject = vi.fn().mockResolvedValue({
       ok: true,
       action: "stopped",
-      message: "Project `habit-cli` will not be selected again until `startProject <project-name>` is used.",
+      message: "Project `habit-cli` will not be selected again until `startProject existing <registered-project>` is used.",
       project: {
         displayName: "Habit CLI",
         slug: "habit-cli",
       },
     });
+    const onListRegisteredProjects = vi.fn().mockResolvedValue([
+      {
+        slug: "habit-cli",
+        displayName: "Habit CLI",
+        status: "active",
+      },
+    ]);
     const fetchSpy = vi.fn()
       .mockResolvedValueOnce(
         new Response(JSON.stringify([{ id: "7160", content: "boot", author: { id: "someone" } }]), { status: 200 }),
       )
       .mockResolvedValueOnce(
         new Response(
-          JSON.stringify([{ id: "7161", content: "stopProject Habit CLI", author: { id: "operator-1" } }]),
+          JSON.stringify([{ id: "7161", content: "stopProject Habit CLI now", author: { id: "operator-1" } }]),
           { status: 200 },
         ),
       )
       .mockResolvedValueOnce(new Response(JSON.stringify({ id: "ack-stop" }), { status: 200 }));
     vi.stubGlobal("fetch", fetchSpy);
 
-    await pollDiscordGracefulShutdownCommand(workDir, { onStopProject });
+    await pollDiscordGracefulShutdownCommand(workDir, {
+      onStopProject,
+      onListRegisteredProjects,
+    });
 
     expect(onStopProject).toHaveBeenCalledWith({
       messageId: "7161",
@@ -1330,8 +1338,8 @@ describe("operatorControl", () => {
         method: "POST",
         body: JSON.stringify({
           content: [
-            "<@operator-1> Stopped current project `Habit CLI`.",
-            "Project `habit-cli` will not be selected again until `startProject <project-name>` is used.",
+            "<@operator-1> Stopped project `Habit CLI`.",
+            "Project `habit-cli` will not be selected again until `startProject existing <registered-project>` is used.",
             "Runtime remains online and is waiting for further operator commands.",
           ].join("\n"),
         }),
@@ -1372,8 +1380,51 @@ describe("operatorControl", () => {
         body: JSON.stringify({
           content: [
             "<@operator-1> Could not stop the requested project.",
-            "`stopProject` requires a project name.",
+            "`stopProject` requires a registered project target.",
             "Usage: `/stopproject project:<registered-project> mode:now|whenComplete`",
+            "Plain-text fallback: `stopProject <registered-project> now|whenComplete`",
+          ].join("\n"),
+        }),
+      }),
+    );
+  });
+
+  it("requires an explicit stopProject mode in plain-text commands", async () => {
+    const workDir = await createTempWorkDir();
+    tempDirs.push(workDir);
+    vi.stubEnv("DISCORD_BOT_TOKEN", "bot-token");
+    vi.stubEnv("DISCORD_CONTROL_GUILD_ID", "guild-1");
+    vi.stubEnv("DISCORD_CONTROL_CHANNEL_ID", "channel-1");
+    vi.stubEnv("DISCORD_OPERATOR_USER_ID", "operator-1");
+
+    const onStopProject = vi.fn();
+    const fetchSpy = vi.fn()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify([{ id: "7174", content: "boot", author: { id: "someone" } }]), { status: 200 }),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify([{ id: "7175", content: "stopProject habit-cli", author: { id: "operator-1" } }]),
+          { status: 200 },
+        ),
+      )
+      .mockResolvedValueOnce(new Response(JSON.stringify({ id: "ack-stop-invalid-mode" }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchSpy);
+
+    await pollDiscordGracefulShutdownCommand(workDir, { onStopProject });
+
+    expect(onStopProject).not.toHaveBeenCalled();
+    expect(fetchSpy).toHaveBeenNthCalledWith(
+      3,
+      "https://discord.com/api/v10/channels/channel-1/messages",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({
+          content: [
+            "<@operator-1> Could not stop the requested project.",
+            "`stopProject` requires an explicit mode. Supported values are `now` and `whenComplete`.",
+            "Usage: `/stopproject project:<registered-project> mode:now|whenComplete`",
+            "Plain-text fallback: `stopProject <registered-project> now|whenComplete`",
           ].join("\n"),
         }),
       }),
@@ -1397,20 +1448,30 @@ describe("operatorControl", () => {
         slug: "habit-cli",
       },
     });
+    const onListRegisteredProjects = vi.fn().mockResolvedValue([
+      {
+        slug: "habit-cli",
+        displayName: "Habit CLI",
+        status: "active",
+      },
+    ]);
     const fetchSpy = vi.fn()
       .mockResolvedValueOnce(
         new Response(JSON.stringify([{ id: "7165", content: "boot", author: { id: "someone" } }]), { status: 200 }),
       )
       .mockResolvedValueOnce(
         new Response(
-          JSON.stringify([{ id: "7166", content: "stopProject Habit CLI whenProjectComplete", author: { id: "operator-1" } }]),
+          JSON.stringify([{ id: "7166", content: "stopProject Habit CLI whenComplete", author: { id: "operator-1" } }]),
           { status: 200 },
         ),
       )
       .mockResolvedValueOnce(new Response(JSON.stringify({ id: "ack-stop-when-complete" }), { status: 200 }));
     vi.stubGlobal("fetch", fetchSpy);
 
-    await pollDiscordGracefulShutdownCommand(workDir, { onStopProject });
+    await pollDiscordGracefulShutdownCommand(workDir, {
+      onStopProject,
+      onListRegisteredProjects,
+    });
 
     expect(onStopProject).toHaveBeenCalledWith({
       messageId: "7166",
@@ -1427,7 +1488,7 @@ describe("operatorControl", () => {
         method: "POST",
         body: JSON.stringify({
           content: [
-            "<@operator-1> Current project `Habit CLI` will stop when complete.",
+            "<@operator-1> Project `Habit CLI` will stop when complete.",
             "Project `habit-cli` will keep running until it has no actionable issues left. Evolvo will then stop it automatically, return to self-work, and remain online.",
             "Evolvo will return to self-work afterward and remain online for further operator commands.",
           ].join("\n"),
@@ -1596,8 +1657,61 @@ describe("operatorControl", () => {
         body: JSON.stringify({
           content: [
             "<@operator-1> Could not queue project start request for `<missing project name>`.",
-            "Project name is required.",
-            "Usage: `/startproject existing project:<registered-project>` or `/startproject new name:<project-name>`",
+            "`startProject` requires the `existing` path and a registered project target.",
+            "Usage: `/startproject existing project:<registered-project>`",
+            "Plain-text fallback: `startProject existing <registered-project>`",
+          ].join("\n"),
+        }),
+      }),
+    );
+  });
+
+  it("requires plain-text startProject existing targets to be in the registered project set", async () => {
+    const workDir = await createTempWorkDir();
+    tempDirs.push(workDir);
+    vi.stubEnv("DISCORD_BOT_TOKEN", "bot-token");
+    vi.stubEnv("DISCORD_CONTROL_GUILD_ID", "guild-1");
+    vi.stubEnv("DISCORD_CONTROL_CHANNEL_ID", "channel-1");
+    vi.stubEnv("DISCORD_OPERATOR_USER_ID", "operator-1");
+
+    const onStartProject = vi.fn();
+    const onListRegisteredProjects = vi.fn().mockResolvedValue([
+      {
+        slug: "habit-cli",
+        displayName: "Habit CLI",
+        status: "active",
+      },
+    ]);
+    const fetchSpy = vi.fn()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify([{ id: "7204", content: "boot", author: { id: "someone" } }]), { status: 200 }),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify([{ id: "7205", content: "startProject existing Missing Project", author: { id: "operator-1" } }]),
+          { status: 200 },
+        ),
+      )
+      .mockResolvedValueOnce(new Response(JSON.stringify({ id: "ack-start-existing-missing" }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchSpy);
+
+    await pollDiscordGracefulShutdownCommand(workDir, {
+      onStartProject,
+      onListRegisteredProjects,
+    });
+
+    expect(onStartProject).not.toHaveBeenCalled();
+    expect(fetchSpy).toHaveBeenNthCalledWith(
+      3,
+      "https://discord.com/api/v10/channels/channel-1/messages",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({
+          content: [
+            "<@operator-1> Could not queue project start request for `Missing Project`.",
+            "Project `Missing Project` is not in the registered project set. Use an exact slug or display name.",
+            "Usage: `/startproject existing project:<registered-project>`",
+            "Plain-text fallback: `startProject existing <registered-project>`",
           ].join("\n"),
         }),
       }),
@@ -1823,7 +1937,7 @@ describe("operatorControl", () => {
     expect(result).toBeNull();
   });
 
-  it("handles an authorized /startproject new slash command and forwards the normalized project request", async () => {
+  it("rejects an authorized /startproject existing slash command when the selected project is not registered", async () => {
     const workDir = await createTempWorkDir();
     tempDirs.push(workDir);
     vi.stubEnv("DISCORD_BOT_TOKEN", "bot-token");
@@ -1831,64 +1945,42 @@ describe("operatorControl", () => {
     vi.stubEnv("DISCORD_CONTROL_CHANNEL_ID", "channel-1");
     vi.stubEnv("DISCORD_OPERATOR_USER_ID", "operator-1");
 
-    const onStartProject = vi.fn().mockResolvedValue({
-      ok: true,
-      action: "created",
-      message: "Created provisioning issue #555 for project `habit-cli`. Canonical workspace: `/home/paddy/habit-cli`.",
-      project: {
-        displayName: "Habit CLI",
+    const onStartProject = vi.fn();
+    const onListRegisteredProjects = vi.fn().mockResolvedValue([
+      {
         slug: "habit-cli",
-        repositoryName: "habit-cli",
-        workspacePath: "/home/paddy/habit-cli",
-        status: "provisioning",
+        displayName: "Habit CLI",
+        status: "active",
       },
-      trackerIssue: {
-        number: 555,
-        url: "https://github.com/evolvo-auto/evolvo-ts/issues/555",
-        alreadyOpen: false,
-      },
-    });
+    ]);
     const interaction = createSlashInteraction({
       id: "slash-start-1",
       commandName: "startproject",
-      subcommand: "new",
+      subcommand: "existing",
       values: {
-        name: "Habit CLI",
+        project: "missing-project",
       },
     });
 
-    const result = await handleDiscordSlashCommandInteraction(interaction, workDir, { onStartProject });
-
-    expect(onStartProject).toHaveBeenCalledWith({
-      messageId: "slash-start-1",
-      requestedAt: expect.any(String),
-      requestedBy: "discord:operator-1",
-      mode: "new",
-      displayName: "Habit CLI",
-      slug: "habit-cli",
-      repositoryName: "habit-cli",
-      issueLabel: "project:habit-cli",
-      workspacePath: "/home/paddy/habit-cli",
+    const result = await handleDiscordSlashCommandInteraction(interaction, workDir, {
+      onStartProject,
+      onListRegisteredProjects,
     });
+
+    expect(onStartProject).not.toHaveBeenCalled();
     expect(interaction.editReply).toHaveBeenCalledWith({
       content: [
-        "<@operator-1> Created new project for `Habit CLI`.",
-        "Created provisioning issue #555 for project `habit-cli`. Canonical workspace: `/home/paddy/habit-cli`.",
-        "Tracker issue: #555 (https://github.com/evolvo-auto/evolvo-ts/issues/555)",
-        "Planned label: `project:habit-cli`",
-        "Planned repository: `habit-cli`",
-        "Planned workspace: `/home/paddy/habit-cli`",
+        "<@operator-1> Could not queue project start request.",
+        "Project `missing-project` is not in the registered project set. Select from autocomplete suggestions.",
+        "Usage: `/startproject existing project:<registered-project>`",
       ].join("\n"),
     });
     expect(result).toEqual({
       gracefulShutdownRequest: null,
       replyContent: [
-        "<@operator-1> Created new project for `Habit CLI`.",
-        "Created provisioning issue #555 for project `habit-cli`. Canonical workspace: `/home/paddy/habit-cli`.",
-        "Tracker issue: #555 (https://github.com/evolvo-auto/evolvo-ts/issues/555)",
-        "Planned label: `project:habit-cli`",
-        "Planned repository: `habit-cli`",
-        "Planned workspace: `/home/paddy/habit-cli`",
+        "<@operator-1> Could not queue project start request.",
+        "Project `missing-project` is not in the registered project set. Select from autocomplete suggestions.",
+        "Usage: `/startproject existing project:<registered-project>`",
       ].join("\n"),
     });
   });
@@ -1969,7 +2061,7 @@ describe("operatorControl", () => {
     const onStopProject = vi.fn().mockResolvedValue({
       ok: true,
       action: "stopped",
-      message: "Project `habit-cli` will not be selected again until `startProject <project-name>` is used.",
+      message: "Project `habit-cli` will not be selected again until `startProject existing <registered-project>` is used.",
       project: {
         displayName: "Habit CLI",
         slug: "habit-cli",
@@ -2006,15 +2098,15 @@ describe("operatorControl", () => {
     });
     expect(interaction.editReply).toHaveBeenCalledWith({
       content: [
-        "<@operator-1> Stopped current project `Habit CLI`.",
-        "Project `habit-cli` will not be selected again until `startProject <project-name>` is used.",
+        "<@operator-1> Stopped project `Habit CLI`.",
+        "Project `habit-cli` will not be selected again until `startProject existing <registered-project>` is used.",
         "Runtime remains online and is waiting for further operator commands.",
       ].join("\n"),
     });
     expect(result).toEqual({
       replyContent: [
-        "<@operator-1> Stopped current project `Habit CLI`.",
-        "Project `habit-cli` will not be selected again until `startProject <project-name>` is used.",
+        "<@operator-1> Stopped project `Habit CLI`.",
+        "Project `habit-cli` will not be selected again until `startProject existing <registered-project>` is used.",
         "Runtime remains online and is waiting for further operator commands.",
       ].join("\n"),
     });
@@ -2068,14 +2160,14 @@ describe("operatorControl", () => {
     });
     expect(interaction.editReply).toHaveBeenCalledWith({
       content: [
-        "<@operator-1> Current project `Habit CLI` will stop when complete.",
+        "<@operator-1> Project `Habit CLI` will stop when complete.",
         "Project `habit-cli` will keep running until it has no actionable issues left. Evolvo will then stop it automatically, return to self-work, and remain online.",
         "Evolvo will return to self-work afterward and remain online for further operator commands.",
       ].join("\n"),
     });
     expect(result).toEqual({
       replyContent: [
-        "<@operator-1> Current project `Habit CLI` will stop when complete.",
+        "<@operator-1> Project `Habit CLI` will stop when complete.",
         "Project `habit-cli` will keep running until it has no actionable issues left. Evolvo will then stop it automatically, return to self-work, and remain online.",
         "Evolvo will return to self-work afterward and remain online for further operator commands.",
       ].join("\n"),
