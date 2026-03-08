@@ -559,6 +559,44 @@ async function applyDeferredStops(options: {
   }
 }
 
+async function clearStaleCodingLeases(options: {
+  workDir: string;
+  inventory: StagedWorkInventory;
+}): Promise<boolean> {
+  let changed = false;
+
+  for (const projectInventory of options.inventory.projects) {
+    const activity = projectInventory.activity;
+    if (!activity?.currentCodingLease) {
+      continue;
+    }
+
+    if (projectInventory.countsByStage["In Dev"] > 0) {
+      continue;
+    }
+
+    await releaseCodingLease({
+      workDir: options.workDir,
+      slug: projectInventory.project.slug,
+    });
+    if (activity.currentWorkItem?.stage === "In Dev") {
+      await setProjectCurrentWorkItem({
+        workDir: options.workDir,
+        slug: projectInventory.project.slug,
+        workItem: null,
+      });
+    }
+    changed = true;
+    logAgent(
+      projectInventory.project,
+      "dev",
+      `cleared stale coding lease for issue #${activity.currentCodingLease.issueNumber} because no board item is currently In Dev.`,
+    );
+  }
+
+  return changed;
+}
+
 export async function runWorkflowSchedulerCycle(options: {
   workDir: string;
   defaultProject: DefaultProjectContext;
@@ -572,6 +610,18 @@ export async function runWorkflowSchedulerCycle(options: {
     trackerIssueManager: options.trackerIssueManager,
     boardsClient: options.boardsClient,
   });
+  const clearedStaleLeases = await clearStaleCodingLeases({
+    workDir: options.workDir,
+    inventory,
+  });
+  if (clearedStaleLeases) {
+    inventory = await buildStagedWorkInventory({
+      workDir: options.workDir,
+      defaultProject: options.defaultProject,
+      trackerIssueManager: options.trackerIssueManager,
+      boardsClient: options.boardsClient,
+    });
+  }
 
   const issueGeneratorCreated = await runIssueGeneratorPass({
     workDir: options.workDir,

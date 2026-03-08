@@ -566,6 +566,93 @@ describe("runWorkflowSchedulerCycle", () => {
     expect(moveProjectItemToStage).not.toHaveBeenCalledWith(project, "item-2", "In Dev");
   });
 
+  it("clears stale coding leases when no board item is in In Dev and then starts dev work", async () => {
+    const { runWorkflowSchedulerCycle } = await import("./workflowScheduler.js");
+    const project = createProject();
+    const staleLeaseInventory = {
+      ...createInventory(project, [
+        createItem(project, 7, "Ready for Dev"),
+      ]),
+      projects: [
+        {
+          ...createInventory(project, [
+            createItem(project, 7, "Ready for Dev"),
+          ]).projects[0]!,
+          activity: {
+            ...createInventory(project, [
+              createItem(project, 7, "Ready for Dev"),
+            ]).projects[0]!.activity,
+            currentCodingLease: {
+              leaseId: `${project.slug}:38:2026-03-08T19:40:58.950Z`,
+              holder: "dev-agent",
+              acquiredAt: "2026-03-08T19:40:58.950Z",
+              heartbeatAt: "2026-03-08T19:40:58.950Z",
+              issueNumber: 38,
+              branchName: null,
+              pullRequestUrl: null,
+            },
+            currentWorkItem: {
+              issueNumber: 38,
+              issueUrl: "https://github.com/Evolvo-org/evolvo-web/issues/38",
+              stage: "In Dev",
+              branchName: null,
+              pullRequestUrl: null,
+            },
+          },
+        },
+      ],
+    };
+    const refreshedInventory = createInventory(project, [
+      createItem(project, 7, "Ready for Dev"),
+    ]);
+    const postDevInventory = createInventory(project, []);
+    buildStagedWorkInventoryMock
+      .mockResolvedValueOnce(staleLeaseInventory)
+      .mockResolvedValueOnce(refreshedInventory)
+      .mockResolvedValueOnce(postDevInventory);
+    runCodingAgentMock.mockResolvedValue({
+      summary: {
+        pullRequestUrls: [],
+        validationCommands: [],
+        failedValidationCommands: [],
+        finalResponse: "done",
+      },
+    });
+
+    const moveProjectItemToStage = vi.fn().mockResolvedValue(undefined);
+    const trackerIssueManager = {
+      forRepository: vi.fn().mockReturnValue({
+        listOpenIssues: vi.fn().mockResolvedValue([]),
+        listRecentClosedIssues: vi.fn().mockResolvedValue([]),
+      }),
+    };
+
+    const result = await runWorkflowSchedulerCycle({
+      workDir: "/tmp/evolvo-ts",
+      defaultProject: {
+        owner: "Evolvo-org",
+        repo: "evolvo-ts",
+        workDir: "/tmp/evolvo-ts",
+      },
+      trackerIssueManager: trackerIssueManager as never,
+      boardsClient: { moveProjectItemToStage } as never,
+      pullRequestClient: { submitReview: vi.fn() } as never,
+    });
+
+    expect(releaseCodingLeaseMock).toHaveBeenCalledWith({
+      workDir: "/tmp/evolvo-ts",
+      slug: "evolvo-web",
+    });
+    expect(setProjectCurrentWorkItemMock).toHaveBeenCalledWith({
+      workDir: "/tmp/evolvo-ts",
+      slug: "evolvo-web",
+      workItem: null,
+    });
+    expect(acquireCodingLeaseMock).toHaveBeenCalled();
+    expect(result.summary.devStarted).toBe(1);
+    expect(moveProjectItemToStage).toHaveBeenCalledWith(project, "item-7", "In Dev");
+  });
+
   it("allows review to move work back to Ready for Dev even when the cap is already full", async () => {
     const { runWorkflowSchedulerCycle } = await import("./workflowScheduler.js");
     const project = createProject();
