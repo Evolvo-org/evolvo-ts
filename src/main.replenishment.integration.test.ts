@@ -21,6 +21,7 @@ const ensureProjectRegistryMock = vi.fn();
 const readProjectRegistryMock = vi.fn();
 const readActiveProjectStateMock = vi.fn();
 const stopActiveProjectStateMock = vi.fn();
+const clearActiveProjectStateMock = vi.fn();
 const resolveProjectExecutionContextForIssueMock = vi.fn();
 const buildProjectRoutingBlockedCommentMock = vi.fn();
 const buildUnifiedIssueQueueMock = vi.fn();
@@ -231,6 +232,7 @@ vi.mock("./projects/projectRegistry.js", () => ({
 }));
 
 vi.mock("./projects/activeProjectState.js", () => ({
+  clearActiveProjectState: clearActiveProjectStateMock,
   readActiveProjectState: readActiveProjectStateMock,
   stopActiveProjectState: stopActiveProjectStateMock,
 }));
@@ -529,6 +531,7 @@ describe("main replenishment integration", () => {
       version: 2,
       activeProjectSlug: null,
       selectionState: null,
+      deferredStopMode: null,
       updatedAt: null,
       requestedBy: null,
       source: null,
@@ -540,10 +543,21 @@ describe("main replenishment integration", () => {
         version: 2,
         activeProjectSlug: null,
         selectionState: null,
+        deferredStopMode: null,
         updatedAt: null,
         requestedBy: null,
         source: null,
       },
+    });
+    clearActiveProjectStateMock.mockReset();
+    clearActiveProjectStateMock.mockResolvedValue({
+      version: 2,
+      activeProjectSlug: null,
+      selectionState: null,
+      deferredStopMode: null,
+      updatedAt: null,
+      requestedBy: null,
+      source: null,
     });
     resolveProjectExecutionContextForIssueMock.mockReset();
     resolveProjectExecutionContextForIssueMock.mockResolvedValue({

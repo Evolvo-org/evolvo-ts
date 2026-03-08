@@ -29,6 +29,7 @@ const writeRuntimeReadinessSignalMock = vi.fn();
 const requestCycleLimitDecisionFromOperatorMock = vi.fn();
 const runDiscordOperatorControlStartupCheckMock = vi.fn();
 const notifyCycleLimitDecisionAppliedInDiscordMock = vi.fn();
+const notifyDeferredProjectStopTriggeredInDiscordMock = vi.fn();
 const notifyIssueStartedInDiscordMock = vi.fn();
 const notifyRuntimeQuittingInDiscordMock = vi.fn();
 const pollDiscordGracefulShutdownCommandMock = vi.fn();
@@ -42,6 +43,7 @@ const ensureProjectRegistryMock = vi.fn();
 const readProjectRegistryMock = vi.fn();
 const readActiveProjectStateMock = vi.fn();
 const stopActiveProjectStateMock = vi.fn();
+const clearActiveProjectStateMock = vi.fn();
 const resolveProjectExecutionContextForIssueMock = vi.fn();
 const buildProjectRoutingBlockedCommentMock = vi.fn();
 const inspectProjectRepositoryIssuesMock = vi.fn();
@@ -174,6 +176,7 @@ vi.mock("./runtime/gracefulShutdown.js", () => ({
 
 vi.mock("./runtime/operatorControl.js", () => ({
   notifyCycleLimitDecisionAppliedInDiscord: notifyCycleLimitDecisionAppliedInDiscordMock,
+  notifyDeferredProjectStopTriggeredInDiscord: notifyDeferredProjectStopTriggeredInDiscordMock,
   notifyIssueStartedInDiscord: notifyIssueStartedInDiscordMock,
   notifyRuntimeQuittingInDiscord: notifyRuntimeQuittingInDiscordMock,
   pollDiscordGracefulShutdownCommand: pollDiscordGracefulShutdownCommandMock,
@@ -209,6 +212,7 @@ vi.mock("./projects/projectRegistry.js", () => ({
 }));
 
 vi.mock("./projects/activeProjectState.js", () => ({
+  clearActiveProjectState: clearActiveProjectStateMock,
   readActiveProjectState: readActiveProjectStateMock,
   stopActiveProjectState: stopActiveProjectStateMock,
 }));
@@ -434,6 +438,7 @@ describe("main", () => {
       version: 2,
       activeProjectSlug: null,
       selectionState: null,
+      deferredStopMode: null,
       updatedAt: null,
       requestedBy: null,
       source: null,
@@ -445,10 +450,21 @@ describe("main", () => {
         version: 2,
         activeProjectSlug: "habit-cli",
         selectionState: "stopped",
+        deferredStopMode: null,
         updatedAt: "2026-03-08T10:00:00.000Z",
         requestedBy: "discord:operator-1",
         source: "stop-project-command",
       },
+    });
+    clearActiveProjectStateMock.mockReset();
+    clearActiveProjectStateMock.mockResolvedValue({
+      version: 2,
+      activeProjectSlug: null,
+      selectionState: null,
+      deferredStopMode: null,
+      updatedAt: null,
+      requestedBy: null,
+      source: null,
     });
     resolveProjectExecutionContextForIssueMock.mockReset();
     resolveProjectExecutionContextForIssueMock.mockResolvedValue({
@@ -596,6 +612,8 @@ describe("main", () => {
     runDiscordOperatorControlStartupCheckMock.mockResolvedValue(undefined);
     notifyCycleLimitDecisionAppliedInDiscordMock.mockReset();
     notifyCycleLimitDecisionAppliedInDiscordMock.mockResolvedValue(undefined);
+    notifyDeferredProjectStopTriggeredInDiscordMock.mockReset();
+    notifyDeferredProjectStopTriggeredInDiscordMock.mockResolvedValue(undefined);
     notifyIssueStartedInDiscordMock.mockReset();
     notifyIssueStartedInDiscordMock.mockResolvedValue(undefined);
     notifyRuntimeQuittingInDiscordMock.mockReset();
@@ -738,11 +756,13 @@ describe("main", () => {
       messageId: "7201",
       requestedAt: "2026-03-08T10:00:00.000Z",
       requestedBy: "discord:operator-1",
+      mode: "now",
     });
 
     expect(stopActiveProjectStateMock).toHaveBeenCalledWith({
       workDir: "/tmp/evolvo",
       requestedBy: "discord:operator-1",
+      mode: "now",
       updatedAt: "2026-03-08T10:00:00.000Z",
     });
     expect(result).toEqual({
@@ -756,6 +776,72 @@ describe("main", () => {
     });
     expect(console.log).toHaveBeenCalledWith("[stopProject] received stop request from discord:operator-1.");
     expect(console.log).toHaveBeenCalledWith("[stopProject] halted project Habit CLI. Runtime remains online.");
+  });
+
+  it("routes deferred stopProject requests through the stop-project state handler", async () => {
+    stopActiveProjectStateMock.mockResolvedValueOnce({
+      status: "stop-when-complete-scheduled",
+      state: {
+        version: 2,
+        activeProjectSlug: "habit-cli",
+        selectionState: "active",
+        deferredStopMode: "when-project-complete",
+        updatedAt: "2026-03-08T10:05:00.000Z",
+        requestedBy: "discord:operator-1",
+        source: "stop-project-command",
+      },
+    });
+    readProjectRegistryMock.mockResolvedValueOnce({
+      version: 1,
+      projects: [
+        DEFAULT_PROJECT_EXECUTION_CONTEXT.project,
+        {
+          ...DEFAULT_PROJECT_EXECUTION_CONTEXT.project,
+          slug: "habit-cli",
+          displayName: "Habit CLI",
+          kind: "managed",
+          issueLabel: "project:habit-cli",
+          executionRepo: {
+            owner: "owner",
+            repo: "habit-cli",
+            url: "https://github.com/owner/habit-cli",
+            defaultBranch: "main",
+          },
+          cwd: "/home/paddy/habit-cli",
+        },
+      ],
+    });
+    const { main } = await import("./main.js");
+
+    await main();
+
+    const discordHandlers = startDiscordGracefulShutdownListenerMock.mock.calls[0]?.[1];
+    const result = await discordHandlers.onStopProject({
+      messageId: "7202",
+      requestedAt: "2026-03-08T10:05:00.000Z",
+      requestedBy: "discord:operator-1",
+      mode: "when-project-complete",
+    });
+
+    expect(stopActiveProjectStateMock).toHaveBeenCalledWith({
+      workDir: "/tmp/evolvo",
+      requestedBy: "discord:operator-1",
+      mode: "when-project-complete",
+      updatedAt: "2026-03-08T10:05:00.000Z",
+    });
+    expect(result).toEqual({
+      ok: true,
+      action: "stop-when-complete-scheduled",
+      message: "Project `habit-cli` will keep running until it has no actionable issues left. Evolvo will then stop it automatically, return to self-work, and remain online.",
+      project: {
+        displayName: "Habit CLI",
+        slug: "habit-cli",
+      },
+    });
+    expect(console.log).toHaveBeenCalledWith("[stopProject] received stop request from discord:operator-1.");
+    expect(console.log).toHaveBeenCalledWith(
+      "[stopProject] project Habit CLI will stop automatically when it runs out of actionable work. Evolvo will then return to self-work.",
+    );
   });
 
   it("logs and excludes unauthorized issues before normal selection", async () => {
@@ -1056,6 +1142,7 @@ describe("main", () => {
       version: 2,
       activeProjectSlug: "habit-cli",
       selectionState: "active",
+      deferredStopMode: null,
       updatedAt: "2026-03-08T09:10:00.000Z",
       requestedBy: "discord:operator-1",
       source: "start-project-command",
@@ -1100,12 +1187,106 @@ describe("main", () => {
     );
   });
 
+  it("stops a deferred project when it runs out of actionable work and returns to self-work", async () => {
+    readActiveProjectStateMock.mockResolvedValueOnce({
+      version: 2,
+      activeProjectSlug: "habit-cli",
+      selectionState: "active",
+      deferredStopMode: "when-project-complete",
+      updatedAt: "2026-03-08T10:00:00.000Z",
+      requestedBy: "discord:operator-1",
+      source: "stop-project-command",
+    });
+    buildUnifiedIssueQueueMock
+      .mockResolvedValueOnce({
+        issues: [
+          {
+            number: 30,
+            title: "Self issue after project completion",
+            description: "self work",
+            state: "open",
+            labels: [],
+            queueKey: "tracker:owner/repo#30",
+            sourceKind: "tracker",
+            projectSlug: null,
+            repository: {
+              owner: "owner",
+              repo: "repo",
+              url: "https://github.com/owner/repo",
+              reference: "owner/repo",
+            },
+            project: null,
+          },
+        ],
+        unauthorizedClosures: [],
+        activeManagedProject: {
+          ...DEFAULT_PROJECT_EXECUTION_CONTEXT.project,
+          slug: "habit-cli",
+          displayName: "Habit CLI",
+          kind: "managed",
+          issueLabel: "project:habit-cli",
+          executionRepo: {
+            owner: "owner",
+            repo: "habit-cli",
+            url: "https://github.com/owner/habit-cli",
+            defaultBranch: "main",
+          },
+          cwd: "/home/paddy/habit-cli",
+        },
+      })
+      .mockImplementation(async () => ({
+        issues: (await listOpenIssuesMock()).map((issue: {
+          number: number;
+          title: string;
+          description: string;
+          state: "open" | "closed";
+          labels: string[];
+        }) => ({
+          ...issue,
+          queueKey: `tracker:owner/repo#${issue.number}`,
+          sourceKind: "tracker",
+          projectSlug: null,
+          repository: {
+            owner: "owner",
+            repo: "repo",
+            url: "https://github.com/owner/repo",
+            reference: "owner/repo",
+          },
+          project: null,
+        })),
+        unauthorizedClosures: [],
+        activeManagedProject: null,
+      }));
+    listOpenIssuesMock
+      .mockResolvedValueOnce([
+        { number: 30, title: "Self issue after project completion", description: "self work", state: "open", labels: [] },
+      ])
+      .mockResolvedValueOnce([]);
+    const { main } = await import("./main.js");
+
+    await main();
+
+    expect(clearActiveProjectStateMock).toHaveBeenCalledWith("/tmp/evolvo");
+    expect(notifyDeferredProjectStopTriggeredInDiscordMock).toHaveBeenCalledWith({
+      displayName: "Habit CLI",
+      slug: "habit-cli",
+    });
+    expect(console.log).toHaveBeenCalledWith(
+      "[stopProject] project habit-cli reached completion with deferred stop active. No actionable project work remains.",
+    );
+    expect(console.log).toHaveBeenCalledWith(
+      "[stopProject] switched from project Habit CLI (habit-cli) back to Evolvo self-work. Runtime remains online.",
+    );
+    expect(runCodingAgentMock).toHaveBeenCalledWith("Issue #30: Self issue after project completion\n\nself work");
+  });
+
   it("keeps the runtime online and idle when the active project is stopped", async () => {
     vi.useFakeTimers();
     readActiveProjectStateMock.mockResolvedValueOnce({
       version: 2,
       activeProjectSlug: "habit-cli",
       selectionState: "stopped",
+      deferredStopMode: null,
       updatedAt: "2026-03-08T10:05:00.000Z",
       requestedBy: "discord:operator-1",
       source: "stop-project-command",
