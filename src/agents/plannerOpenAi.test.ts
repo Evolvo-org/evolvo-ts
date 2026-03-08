@@ -4,7 +4,13 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const execFileMock = vi.fn();
+const execFileAsyncMock = vi.fn();
 const fetchMock = vi.fn();
+const kPromisifyCustom = Symbol.for("nodejs.util.promisify.custom");
+
+Object.defineProperty(execFileMock, kPromisifyCustom, {
+  value: execFileAsyncMock,
+});
 
 vi.mock("node:child_process", () => ({
   execFile: execFileMock,
@@ -14,6 +20,7 @@ describe("plannerOpenAi", () => {
   beforeEach(() => {
     vi.resetModules();
     execFileMock.mockReset();
+    execFileAsyncMock.mockReset();
     fetchMock.mockReset();
     vi.stubGlobal("fetch", fetchMock);
   });
@@ -26,8 +33,16 @@ describe("plannerOpenAi", () => {
   it("calls the Responses API, requires initial repository inspection, and feeds tool output back to the model", async () => {
     const workDir = await mkdtemp(join(tmpdir(), "planner-openai-"));
     await mkdir(join(workDir, "src"), { recursive: true });
+    await mkdir(join(workDir, ".evolvo"), { recursive: true });
+    await mkdir(join(workDir, "build"), { recursive: true });
+    await mkdir(join(workDir, "coverage"), { recursive: true });
+    await mkdir(join(workDir, ".turbo"), { recursive: true });
     await writeFile(join(workDir, "README.md"), "# Evolvo\n", "utf8");
     await writeFile(join(workDir, "src", "main.ts"), "export const main = true;\n", "utf8");
+    await writeFile(join(workDir, ".evolvo", "planner.json"), "{\"artifact\":true}\n", "utf8");
+    await writeFile(join(workDir, "build", "bundle.js"), "console.log('generated');\n", "utf8");
+    await writeFile(join(workDir, "coverage", "coverage.json"), "{\"coverage\":true}\n", "utf8");
+    await writeFile(join(workDir, ".turbo", "state.json"), "{\"cache\":true}\n", "utf8");
 
     fetchMock
       .mockResolvedValueOnce(
@@ -144,6 +159,14 @@ describe("plannerOpenAi", () => {
           expect.objectContaining({ path: "src", type: "directory" }),
         ]),
       );
+      expect(parsedToolOutput.entries).not.toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ path: ".evolvo" }),
+          expect.objectContaining({ path: "build" }),
+          expect.objectContaining({ path: "coverage" }),
+          expect.objectContaining({ path: ".turbo" }),
+        ]),
+      );
     } finally {
       await rm(workDir, { recursive: true, force: true });
     }
@@ -183,16 +206,66 @@ describe("plannerOpenAi", () => {
     }
   });
 
+  it("passes generated-directory exclusions to ripgrep-backed planner search", async () => {
+    execFileAsyncMock.mockResolvedValueOnce({
+      stdout: "src/main.ts:1:planner issue evidence\n",
+      stderr: "",
+    });
+
+    const workDir = await mkdtemp(join(tmpdir(), "planner-openai-rg-search-"));
+
+    try {
+      const { runPlannerRepositoryTool } = await import("./plannerOpenAi.js");
+
+      const result = await runPlannerRepositoryTool(
+        "search_repository",
+        {
+          query: "planner",
+          path: ".",
+          limit: 5,
+        },
+        workDir,
+      );
+
+      expect(result).toEqual(
+        expect.objectContaining({
+          ok: true,
+          path: ".",
+          query: "planner",
+          results: ["src/main.ts:1:planner issue evidence"],
+        }),
+      );
+      expect(execFileAsyncMock).toHaveBeenCalledWith(
+        "rg",
+        expect.arrayContaining([
+          "--glob",
+          "!.evolvo/**",
+          "--glob",
+          "!build/**",
+          "--glob",
+          "!coverage/**",
+          "--glob",
+          "!.turbo/**",
+        ]),
+        expect.objectContaining({
+          cwd: workDir,
+          maxBuffer: 1024 * 1024,
+        }),
+      );
+    } finally {
+      await rm(workDir, { recursive: true, force: true });
+    }
+  });
+
   it("falls back to JavaScript search when ripgrep is unavailable", async () => {
-    execFileMock.mockImplementation(
-      (_command: string, _args: string[], _options: unknown, callback: (error: Error, stdout: string, stderr: string) => void) => {
-        const error = Object.assign(new Error("ripgrep missing"), { code: "ENOENT" });
-        callback(error, "", "");
-      },
-    );
+    execFileAsyncMock.mockRejectedValueOnce(Object.assign(new Error("ripgrep missing"), { code: "ENOENT" }));
 
     const workDir = await mkdtemp(join(tmpdir(), "planner-openai-search-"));
+    await mkdir(join(workDir, ".evolvo"), { recursive: true });
+    await mkdir(join(workDir, "build"), { recursive: true });
     await writeFile(join(workDir, "notes.txt"), "first line\nplanner issue evidence\n", "utf8");
+    await writeFile(join(workDir, ".evolvo", "planner.log"), "planner issue evidence in artifact\n", "utf8");
+    await writeFile(join(workDir, "build", "generated.txt"), "planner issue evidence in build\n", "utf8");
 
     try {
       const { runPlannerRepositoryTool } = await import("./plannerOpenAi.js");
@@ -216,6 +289,12 @@ describe("plannerOpenAi", () => {
         }),
       );
       expect(result.results).toEqual([expect.stringContaining("notes.txt:2:planner issue evidence")]);
+      expect(result.results).not.toEqual(
+        expect.arrayContaining([
+          expect.stringContaining(".evolvo/planner.log"),
+          expect.stringContaining("build/generated.txt"),
+        ]),
+      );
     } finally {
       await rm(workDir, { recursive: true, force: true });
     }
