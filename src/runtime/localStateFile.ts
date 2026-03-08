@@ -26,6 +26,27 @@ function buildCorruptStatePath(statePath: string, atMs = Date.now()): string {
   );
 }
 
+function buildTempStatePath(statePath: string, atMs = Date.now()): string {
+  const extension = extname(statePath);
+  const fileName = basename(statePath, extension);
+  return join(
+    dirname(statePath),
+    `${fileName}.tmp-${Math.max(0, Math.floor(atMs))}-${process.pid}${extension}`,
+  );
+}
+
+export async function writeAtomicJsonState(statePath: string, state: unknown): Promise<void> {
+  await fs.mkdir(dirname(statePath), { recursive: true });
+  const tempPath = buildTempStatePath(statePath);
+  try {
+    await fs.writeFile(tempPath, `${JSON.stringify(state, null, 2)}\n`, "utf8");
+    await fs.rename(tempPath, statePath);
+  } catch (error) {
+    await fs.rm(tempPath, { force: true }).catch(() => undefined);
+    throw error;
+  }
+}
+
 export async function readRecoverableJsonState<T>(
   options: ReadRecoverableJsonStateOptions<T>,
 ): Promise<T> {
@@ -57,8 +78,7 @@ async function recoverMalformedJsonState<T>(
   const corruptPath = buildCorruptStatePath(options.statePath);
   await fs.rename(options.statePath, corruptPath);
   const defaultState = options.normalizeState(options.createDefaultState()).state;
-  await fs.mkdir(dirname(options.statePath), { recursive: true });
-  await fs.writeFile(options.statePath, `${JSON.stringify(defaultState, null, 2)}\n`, "utf8");
+  await writeAtomicJsonState(options.statePath, defaultState);
   console.warn(
     `Recovered malformed ${options.warningLabel} at ${options.statePath}; preserved corrupt file at ${corruptPath}.`,
   );
@@ -71,8 +91,7 @@ async function recoverInvalidJsonState<T>(
 ): Promise<T> {
   const corruptPath = buildCorruptStatePath(options.statePath);
   await fs.rename(options.statePath, corruptPath);
-  await fs.mkdir(dirname(options.statePath), { recursive: true });
-  await fs.writeFile(options.statePath, `${JSON.stringify(normalizedState, null, 2)}\n`, "utf8");
+  await writeAtomicJsonState(options.statePath, normalizedState);
   console.warn(
     `Recovered invalid ${options.warningLabel} at ${options.statePath}; preserved corrupt file at ${corruptPath}.`,
   );

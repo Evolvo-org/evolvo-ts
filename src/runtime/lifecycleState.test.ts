@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -265,6 +265,48 @@ describe("lifecycleState", () => {
     expect(warnSpy).toHaveBeenCalledWith(
       `Recovered malformed lifecycle state store at ${statePath}; preserved corrupt file at ${corruptPath}.`,
     );
+  });
+
+  it("ignores interrupted temp files when persisting lifecycle state", async () => {
+    const workDir = await createTempWorkDir();
+    tempDirs.push(workDir);
+    const evolvoDir = join(workDir, ".evolvo");
+    await mkdir(evolvoDir, { recursive: true });
+    await writeFile(join(evolvoDir, "runtime-lifecycle-state.tmp-interrupted.json"), "{\"issues\":", "utf8");
+
+    const result = await transitionCanonicalLifecycleState(workDir, {
+      issueNumber: 88,
+      kind: "issue",
+      nextState: "selected",
+      atMs: 2000,
+    });
+
+    expect(result.ok).toBe(true);
+    expect(JSON.parse(await readFile(join(evolvoDir, "runtime-lifecycle-state.json"), "utf8"))).toEqual({
+      version: 1,
+      issues: {
+        88: {
+          issueNumber: 88,
+          kind: "issue",
+          state: "selected",
+          updatedAt: new Date(2000).toISOString(),
+          transitionCount: 1,
+          history: [
+            {
+              from: null,
+              to: "selected",
+              at: new Date(2000).toISOString(),
+              reason: null,
+              runCycle: null,
+            },
+          ],
+        },
+      },
+    });
+    expect((await readdir(evolvoDir)).sort()).toEqual([
+      "runtime-lifecycle-state.json",
+      "runtime-lifecycle-state.tmp-interrupted.json",
+    ]);
   });
 
   it("formats canonical lifecycle comments with canonical and derived sections", () => {

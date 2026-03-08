@@ -1,10 +1,10 @@
-import { promises as fs } from "node:fs";
 import { join } from "node:path";
 import { hasIssueLabel, isChallengeIssue } from "../issues/challengeIssue.js";
 import type { IssueSummary } from "../issues/taskIssueManager.js";
 import {
   readRecoverableJsonState,
   type RecoverableJsonStateNormalizationResult,
+  writeAtomicJsonState,
 } from "../runtime/localStateFile.js";
 
 const EVOLVO_DIRECTORY_NAME = ".evolvo";
@@ -142,12 +142,7 @@ export async function readChallengeRetryState(workDir: string): Promise<Challeng
 }
 
 async function writeChallengeRetryState(workDir: string, state: ChallengeRetryState): Promise<void> {
-  await fs.mkdir(join(workDir, EVOLVO_DIRECTORY_NAME), { recursive: true });
-  await fs.writeFile(
-    getRetryStatePath(workDir),
-    `${JSON.stringify(normalizeRetryState(state).state, null, 2)}\n`,
-    "utf8",
-  );
+  await writeAtomicJsonState(getRetryStatePath(workDir), normalizeRetryState(state).state);
 }
 
 export async function recordChallengeAttemptOutcome(

@@ -1,8 +1,8 @@
-import { promises as fs } from "node:fs";
 import { join } from "node:path";
 import {
   readRecoverableJsonState,
   type RecoverableJsonStateNormalizationResult,
+  writeAtomicJsonState,
 } from "./localStateFile.js";
 
 const EVOLVO_DIRECTORY_NAME = ".evolvo";
@@ -238,8 +238,7 @@ export async function readCanonicalLifecycleState(workDir: string): Promise<Life
 }
 
 async function writeCanonicalLifecycleState(workDir: string, state: LifecycleStateStore): Promise<void> {
-  await fs.mkdir(join(workDir, EVOLVO_DIRECTORY_NAME), { recursive: true });
-  await fs.writeFile(getStatePath(workDir), `${JSON.stringify(normalizeStateStore(state).state, null, 2)}\n`, "utf8");
+  await writeAtomicJsonState(getStatePath(workDir), normalizeStateStore(state).state);
 }
 
 export async function transitionCanonicalLifecycleState(

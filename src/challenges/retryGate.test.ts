@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -316,5 +316,32 @@ describe("retryGate", () => {
     expect(warnSpy).toHaveBeenCalledWith(
       `Recovered invalid challenge retry state store at ${statePath}; preserved corrupt file at ${corruptPath}.`,
     );
+  });
+
+  it("ignores interrupted temp files when persisting challenge retry state", async () => {
+    const workDir = await createTempWorkDir();
+    tempDirs.push(workDir);
+    const evolvoDir = join(workDir, ".evolvo");
+    await mkdir(evolvoDir, { recursive: true });
+    await writeFile(join(evolvoDir, "challenge-retry-state.tmp-interrupted.json"), "{\"failuresByChallenge\":", "utf8");
+
+    const state = await recordChallengeAttemptOutcome(workDir, {
+      challengeIssueNumber: 42,
+      success: false,
+      nowMs: 5000,
+    });
+
+    expect(state).toEqual({
+      failuresByChallenge: {
+        42: {
+          attempts: 1,
+          lastFailureAtMs: 5000,
+        },
+      },
+    });
+    expect((await readdir(evolvoDir)).sort()).toEqual([
+      "challenge-retry-state.json",
+      "challenge-retry-state.tmp-interrupted.json",
+    ]);
   });
 });
