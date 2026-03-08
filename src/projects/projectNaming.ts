@@ -1,19 +1,34 @@
+import { join } from "node:path";
+
 export const DEFAULT_PROJECT_SLUG = "evolvo";
 export const PROJECT_LABEL_PREFIX = "project:";
+export const MANAGED_PROJECT_WORKSPACE_ROOT = "/home/paddy";
 
 export type NormalizedProjectName = {
   displayName: string;
   slug: string;
   repositoryName: string;
   issueLabel: string;
-  workspaceRelativePath: string;
+  workspacePath: string;
 };
 
 export function buildProjectIssueLabel(slug: string): string {
   return `${PROJECT_LABEL_PREFIX}${slug}`;
 }
 
-export function normalizeProjectNameInput(input: string): NormalizedProjectName {
+export function resolveManagedProjectWorkspacePath(
+  slug: string,
+  workspaceRoot = MANAGED_PROJECT_WORKSPACE_ROOT,
+): string {
+  return join(workspaceRoot, slug);
+}
+
+export function normalizeProjectNameInput(
+  input: string,
+  options: {
+    workspaceRoot?: string;
+  } = {},
+): NormalizedProjectName {
   const displayName = input.trim().replace(/\s+/g, " ");
   if (!displayName) {
     throw new Error("Project name is required.");
@@ -41,6 +56,6 @@ export function normalizeProjectNameInput(input: string): NormalizedProjectName 
     slug,
     repositoryName: slug,
     issueLabel: buildProjectIssueLabel(slug),
-    workspaceRelativePath: `projects/${slug}`,
+    workspacePath: resolveManagedProjectWorkspacePath(slug, options.workspaceRoot),
   };
 }

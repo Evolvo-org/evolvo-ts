@@ -1001,7 +1001,7 @@ describe("operatorControl", () => {
         displayName: "Habit CLI",
         slug: "habit-cli",
         repositoryName: "habit-cli",
-        workspacePath: "projects/habit-cli",
+        workspacePath: "/home/paddy/habit-cli",
         status: "provisioning",
       },
       trackerIssue: {
@@ -1072,12 +1072,12 @@ describe("operatorControl", () => {
     const onStartProject = vi.fn().mockResolvedValue({
       ok: true,
       action: "created",
-      message: "Created provisioning issue #555 for project `habit-cli`.",
+      message: "Created provisioning issue #555 for project `habit-cli`. Canonical workspace: `/home/paddy/habit-cli`.",
       project: {
         displayName: "Habit CLI",
         slug: "habit-cli",
         repositoryName: "habit-cli",
-        workspacePath: "projects/habit-cli",
+        workspacePath: "/home/paddy/habit-cli",
         status: "provisioning",
       },
       trackerIssue: {
@@ -1110,7 +1110,7 @@ describe("operatorControl", () => {
       slug: "habit-cli",
       repositoryName: "habit-cli",
       issueLabel: "project:habit-cli",
-      workspaceRelativePath: "projects/habit-cli",
+      workspacePath: "/home/paddy/habit-cli",
     });
     expect(fetchSpy).toHaveBeenNthCalledWith(
       3,
@@ -1120,11 +1120,11 @@ describe("operatorControl", () => {
         body: JSON.stringify({
           content: [
             "<@operator-1> Created new project for `Habit CLI`.",
-            "Created provisioning issue #555 for project `habit-cli`.",
+            "Created provisioning issue #555 for project `habit-cli`. Canonical workspace: `/home/paddy/habit-cli`.",
             "Tracker issue: #555 (https://github.com/evolvo-auto/evolvo-ts/issues/555)",
             "Planned label: `project:habit-cli`",
             "Planned repository: `habit-cli`",
-            "Planned workspace: `projects/habit-cli`",
+            "Planned workspace: `/home/paddy/habit-cli`",
           ].join("\n"),
         }),
       }),
@@ -1142,13 +1142,13 @@ describe("operatorControl", () => {
     const onStartProject = vi.fn().mockResolvedValue({
       ok: true,
       action: "resumed",
-      message: "Resumed existing project `habit-cli`.",
+      message: "Resumed existing project `habit-cli`. Reused existing workspace directory `/home/paddy/habit-cli`, and that path is now the active working directory.",
       project: {
         displayName: "Habit CLI",
         slug: "habit-cli",
         repositoryName: "habit-cli",
         repositoryUrl: "https://github.com/evolvo-auto/habit-cli",
-        workspacePath: "/tmp/evolvo/projects/habit-cli",
+        workspacePath: "/home/paddy/habit-cli",
         status: "active",
       },
     });
@@ -1175,10 +1175,10 @@ describe("operatorControl", () => {
         body: JSON.stringify({
           content: [
             "<@operator-1> Resumed existing project `Habit CLI`.",
-            "Resumed existing project `habit-cli`.",
+            "Resumed existing project `habit-cli`. Reused existing workspace directory `/home/paddy/habit-cli`, and that path is now the active working directory.",
             "Registry status: `active`",
             "Execution repository: https://github.com/evolvo-auto/habit-cli",
-            "Workspace: `/tmp/evolvo/projects/habit-cli`",
+            "Workspace: `/home/paddy/habit-cli`",
           ].join("\n"),
         }),
       }),
@@ -1550,12 +1550,12 @@ describe("operatorControl", () => {
     const onStartProject = vi.fn().mockResolvedValue({
       ok: true,
       action: "created",
-      message: "Created provisioning issue #555 for project `habit-cli`.",
+      message: "Created provisioning issue #555 for project `habit-cli`. Canonical workspace: `/home/paddy/habit-cli`.",
       project: {
         displayName: "Habit CLI",
         slug: "habit-cli",
         repositoryName: "habit-cli",
-        workspacePath: "projects/habit-cli",
+        workspacePath: "/home/paddy/habit-cli",
         status: "provisioning",
       },
       trackerIssue: {
@@ -1582,27 +1582,27 @@ describe("operatorControl", () => {
       slug: "habit-cli",
       repositoryName: "habit-cli",
       issueLabel: "project:habit-cli",
-      workspaceRelativePath: "projects/habit-cli",
+      workspacePath: "/home/paddy/habit-cli",
     });
     expect(interaction.editReply).toHaveBeenCalledWith({
       content: [
         "<@operator-1> Created new project for `Habit CLI`.",
-        "Created provisioning issue #555 for project `habit-cli`.",
+        "Created provisioning issue #555 for project `habit-cli`. Canonical workspace: `/home/paddy/habit-cli`.",
         "Tracker issue: #555 (https://github.com/evolvo-auto/evolvo-ts/issues/555)",
         "Planned label: `project:habit-cli`",
         "Planned repository: `habit-cli`",
-        "Planned workspace: `projects/habit-cli`",
+        "Planned workspace: `/home/paddy/habit-cli`",
       ].join("\n"),
     });
     expect(result).toEqual({
       gracefulShutdownRequest: null,
       replyContent: [
         "<@operator-1> Created new project for `Habit CLI`.",
-        "Created provisioning issue #555 for project `habit-cli`.",
+        "Created provisioning issue #555 for project `habit-cli`. Canonical workspace: `/home/paddy/habit-cli`.",
         "Tracker issue: #555 (https://github.com/evolvo-auto/evolvo-ts/issues/555)",
         "Planned label: `project:habit-cli`",
         "Planned repository: `habit-cli`",
-        "Planned workspace: `projects/habit-cli`",
+        "Planned workspace: `/home/paddy/habit-cli`",
       ].join("\n"),
     });
   });

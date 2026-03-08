@@ -298,7 +298,7 @@ describe("main", () => {
         displayName: "Habit CLI",
         slug: "habit-cli",
         repositoryName: "habit-cli",
-        workspacePath: "projects/habit-cli",
+        workspacePath: "/home/paddy/habit-cli",
         status: "provisioning",
       },
       trackerIssue: {
@@ -316,7 +316,7 @@ describe("main", () => {
         slug: "habit-cli",
         repositoryName: "habit-cli",
         issueLabel: "project:habit-cli",
-        workspaceRelativePath: "projects/habit-cli",
+        workspacePath: "/home/paddy/habit-cli",
         requestedBy: "discord:operator-1",
         requestedAt: "2026-03-07T12:00:00.000Z",
       },
@@ -336,7 +336,7 @@ describe("main", () => {
           url: "https://github.com/owner/habit-cli",
           defaultBranch: "main",
         },
-        cwd: "/tmp/evolvo/projects/habit-cli",
+        cwd: "/home/paddy/habit-cli",
         status: "active",
         sourceIssueNumber: 400,
         createdAt: "2026-03-07T12:00:00.000Z",
@@ -349,6 +349,7 @@ describe("main", () => {
         },
       },
       failureStep: null,
+      workspaceAction: "created",
       message: "Provisioned project Habit CLI.",
     });
     isProjectProvisioningRequestIssueMock.mockReset();
@@ -585,7 +586,7 @@ describe("main", () => {
       slug: "habit-cli",
       repositoryName: "habit-cli",
       issueLabel: "project:habit-cli",
-      workspaceRelativePath: "projects/habit-cli",
+      workspacePath: "/home/paddy/habit-cli",
     });
 
     expect(handleStartProjectCommandMock).toHaveBeenCalledWith({
@@ -605,7 +606,7 @@ describe("main", () => {
         displayName: "Habit CLI",
         slug: "habit-cli",
         repositoryName: "habit-cli",
-        workspacePath: "projects/habit-cli",
+        workspacePath: "/home/paddy/habit-cli",
         status: "provisioning",
       },
       trackerIssue: {
@@ -615,7 +616,7 @@ describe("main", () => {
       },
     });
     expect(console.log).toHaveBeenCalledWith(
-      "[startProject] created new project flow for Habit CLI (habit-cli).",
+      "[startProject] created new project flow for Habit CLI (habit-cli) at /home/paddy/habit-cli.",
     );
   });
 
@@ -636,7 +637,7 @@ describe("main", () => {
             url: "https://github.com/owner/habit-cli",
             defaultBranch: "main",
           },
-          cwd: "/tmp/evolvo/projects/habit-cli",
+          cwd: "/home/paddy/habit-cli",
         },
       ],
     });
@@ -753,7 +754,7 @@ describe("main", () => {
         slug: "habit-cli",
         repositoryName: "habit-cli",
         issueLabel: "project:habit-cli",
-        workspaceRelativePath: "projects/habit-cli",
+        workspacePath: "/home/paddy/habit-cli",
         requestedBy: "discord:operator-1",
         requestedAt: "2026-03-07T12:00:00.000Z",
       },
@@ -773,7 +774,7 @@ describe("main", () => {
           url: "https://github.com/owner/habit-cli",
           defaultBranch: "main",
         },
-        cwd: "/tmp/evolvo/projects/habit-cli",
+        cwd: "/home/paddy/habit-cli",
         status: "failed",
         sourceIssueNumber: 78,
         createdAt: "2026-03-07T12:00:00.000Z",
@@ -786,6 +787,7 @@ describe("main", () => {
         },
       },
       failureStep: "workspace",
+      workspaceAction: null,
       message: "workspace failed",
     });
     const { main } = await import("./main.js");
@@ -899,7 +901,7 @@ describe("main", () => {
             url: "https://github.com/owner/habit-cli",
             defaultBranch: "main",
           },
-          cwd: "/tmp/evolvo/projects/habit-cli",
+          cwd: "/home/paddy/habit-cli",
           status: "active",
           sourceIssueNumber: 318,
           createdAt: "2026-03-07T12:00:00.000Z",
@@ -935,7 +937,7 @@ describe("main", () => {
       lifecycleState: "selected -> executing",
     });
     expect(configureCodingAgentExecutionContextMock).toHaveBeenCalledWith({
-      workDir: "/tmp/evolvo/projects/habit-cli",
+      workDir: "/home/paddy/habit-cli",
       internalRepositoryUrls: [
         "https://github.com/tracker-org/issue-tracker",
         "https://github.com/owner/habit-cli",
@@ -978,7 +980,7 @@ describe("main", () => {
             url: "https://github.com/owner/habit-cli",
             defaultBranch: "main",
           },
-          cwd: "/tmp/evolvo/projects/habit-cli",
+          cwd: "/home/paddy/habit-cli",
         },
         trackerRepository: "owner/repo",
         executionRepository: "owner/habit-cli",

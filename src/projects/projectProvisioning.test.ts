@@ -19,6 +19,10 @@ async function createTempWorkDir(): Promise<string> {
   return mkdtemp(join(tmpdir(), "project-provisioning-"));
 }
 
+function createManagedWorkspacePath(workDir: string, slug = "habit-cli"): string {
+  return resolve(workDir, slug);
+}
+
 function createProvisioningIssue(description: string): IssueSummary {
   return {
     number: 318,
@@ -64,6 +68,7 @@ describe("projectProvisioning", () => {
       projectName: " Habit   CLI ",
       requestedBy: "discord:operator-1",
       requestedAt: "2026-03-07T12:00:00.000Z",
+      workspaceRoot: workDir,
     });
 
     expect(result).toEqual({
@@ -77,7 +82,7 @@ describe("projectProvisioning", () => {
         slug: "habit-cli",
         repositoryName: "habit-cli",
         issueLabel: "project:habit-cli",
-        workspaceRelativePath: "projects/habit-cli",
+        workspacePath: createManagedWorkspacePath(workDir),
         requestedBy: "discord:operator-1",
         requestedAt: "2026-03-07T12:00:00.000Z",
       },
@@ -102,7 +107,7 @@ describe("projectProvisioning", () => {
             slug: "habit-cli",
             repositoryName: "habit-cli",
             issueLabel: "project:habit-cli",
-            workspaceRelativePath: "projects/habit-cli",
+            workspacePath: createManagedWorkspacePath(workDir),
             requestedBy: "discord:operator-1",
             requestedAt: "2026-03-07T12:00:00.000Z",
           }),
@@ -120,6 +125,7 @@ describe("projectProvisioning", () => {
       trackerRepo: "evolvo-ts",
       projectName: "Habit CLI",
       requestedBy: "discord:operator-1",
+      workspaceRoot: workDir,
     });
 
     expect(result).toEqual({
@@ -155,7 +161,7 @@ describe("projectProvisioning", () => {
           url: "https://github.com/evolvo-auto/habit-cli",
           defaultBranch: "main",
         },
-        cwd: resolve(workDir, "projects", "habit-cli"),
+        cwd: createManagedWorkspacePath(workDir),
         status: "failed",
         sourceIssueNumber: 318,
         createdAt: "2026-03-07T12:00:00.000Z",
@@ -190,6 +196,7 @@ describe("projectProvisioning", () => {
       trackerRepo: "evolvo-ts",
       projectName: "Habit CLI",
       requestedBy: "discord:operator-1",
+      workspaceRoot: workDir,
     });
 
     expect(result).toEqual(
@@ -234,6 +241,7 @@ describe("projectProvisioning", () => {
       trackerRepo: "evolvo-ts",
       projectName: "Habit CLI",
       requestedBy: "discord:operator-1",
+      workspaceRoot: workDir,
     });
 
     expect(result).toEqual(
@@ -282,17 +290,18 @@ describe("projectProvisioning", () => {
       projectName: "Habit CLI",
       requestedBy: "discord:operator-1",
       requestedAt: "2026-03-08T08:00:00.000Z",
+      workspaceRoot: workDir,
     });
 
     expect(result).toEqual({
       ok: true,
       action: "created",
-      message: "Created provisioning issue #405 for project `habit-cli`.",
+      message: `Created provisioning issue #405 for project \`habit-cli\`. Canonical workspace: \`${createManagedWorkspacePath(workDir)}\`.`,
       project: {
         displayName: "Habit CLI",
         slug: "habit-cli",
         repositoryName: "habit-cli",
-        workspacePath: "projects/habit-cli",
+        workspacePath: createManagedWorkspacePath(workDir),
         status: "provisioning",
       },
       trackerIssue: {
@@ -314,6 +323,8 @@ describe("projectProvisioning", () => {
   it("resumes an existing active project without creating a new provisioning issue", async () => {
     const workDir = await createTempWorkDir();
     tempDirs.push(workDir);
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    await mkdir(createManagedWorkspacePath(workDir), { recursive: true });
     await upsertProjectRecord(
       workDir,
       {
@@ -337,7 +348,7 @@ describe("projectProvisioning", () => {
           url: "https://github.com/evolvo-auto/habit-cli",
           defaultBranch: "main",
         },
-        cwd: resolve(workDir, "projects", "habit-cli"),
+        cwd: createManagedWorkspacePath(workDir),
         status: "active",
         sourceIssueNumber: 318,
         createdAt: "2026-03-07T12:00:00.000Z",
@@ -363,18 +374,19 @@ describe("projectProvisioning", () => {
       projectName: "Habit CLI",
       requestedBy: "discord:operator-1",
       requestedAt: "2026-03-08T08:05:00.000Z",
+      workspaceRoot: workDir,
     });
 
     expect(result).toEqual({
       ok: true,
       action: "resumed",
-      message: "Resumed existing project `habit-cli`.",
+      message: `Resumed existing project \`habit-cli\`. Reused existing workspace directory \`${createManagedWorkspacePath(workDir)}\`, and that path is now the active working directory.`,
       project: {
         displayName: "Habit CLI",
         slug: "habit-cli",
         repositoryName: "habit-cli",
         repositoryUrl: "https://github.com/evolvo-auto/habit-cli",
-        workspacePath: resolve(workDir, "projects", "habit-cli"),
+        workspacePath: createManagedWorkspacePath(workDir),
         status: "active",
       },
     });
@@ -387,6 +399,9 @@ describe("projectProvisioning", () => {
       requestedBy: "discord:operator-1",
       source: "start-project-command",
     });
+    expect(logSpy).toHaveBeenCalledWith(
+      `[project-workspace] resolved ${createManagedWorkspacePath(workDir)}; reused existing directory; ${createManagedWorkspacePath(workDir)} is now the active working directory for project habit-cli.`,
+    );
   });
 
   it("resumes a failed project by reusing its existing recovery issue", async () => {
@@ -415,7 +430,7 @@ describe("projectProvisioning", () => {
           url: "https://github.com/evolvo-auto/habit-cli",
           defaultBranch: "main",
         },
-        cwd: resolve(workDir, "projects", "habit-cli"),
+        cwd: createManagedWorkspacePath(workDir),
         status: "failed",
         sourceIssueNumber: 318,
         createdAt: "2026-03-07T12:00:00.000Z",
@@ -439,7 +454,7 @@ describe("projectProvisioning", () => {
             slug: "habit-cli",
             repositoryName: "habit-cli",
             issueLabel: "project:habit-cli",
-            workspaceRelativePath: "projects/habit-cli",
+            workspacePath: createManagedWorkspacePath(workDir),
             requestedBy: "discord:operator-1",
             requestedAt: "2026-03-08T07:50:00.000Z",
           }),
@@ -458,18 +473,19 @@ describe("projectProvisioning", () => {
       projectName: "Habit CLI",
       requestedBy: "discord:operator-1",
       requestedAt: "2026-03-08T08:10:00.000Z",
+      workspaceRoot: workDir,
     });
 
     expect(result).toEqual({
       ok: true,
       action: "resumed",
-      message: "Resumed existing project `habit-cli` and kept recovery issue #406 active.",
+      message: `Resumed existing project \`habit-cli\` and kept recovery issue #406 active. Canonical workspace: \`${createManagedWorkspacePath(workDir)}\`.`,
       project: {
         displayName: "Habit CLI",
         slug: "habit-cli",
         repositoryName: "habit-cli",
         repositoryUrl: "https://github.com/evolvo-auto/habit-cli",
-        workspacePath: resolve(workDir, "projects", "habit-cli"),
+        workspacePath: createManagedWorkspacePath(workDir),
         status: "failed",
       },
       trackerIssue: {
@@ -507,7 +523,7 @@ describe("projectProvisioning", () => {
           url: "https://github.com/evolvo-auto/habit-cli",
           defaultBranch: "main",
         },
-        cwd: resolve(workDir, "projects", "habit-cli"),
+        cwd: createManagedWorkspacePath(workDir),
         status: "failed",
         sourceIssueNumber: 318,
         createdAt: "2026-03-07T12:00:00.000Z",
@@ -543,18 +559,19 @@ describe("projectProvisioning", () => {
       projectName: "Habit CLI",
       requestedBy: "discord:operator-1",
       requestedAt: "2026-03-08T08:15:00.000Z",
+      workspaceRoot: workDir,
     });
 
     expect(result).toEqual({
       ok: true,
       action: "resumed",
-      message: "Resumed existing project `habit-cli` and queued recovery issue #407.",
+      message: `Resumed existing project \`habit-cli\` and queued recovery issue #407. Canonical workspace: \`${createManagedWorkspacePath(workDir)}\`.`,
       project: {
         displayName: "Habit CLI",
         slug: "habit-cli",
         repositoryName: "habit-cli",
         repositoryUrl: "https://github.com/evolvo-auto/habit-cli",
-        workspacePath: resolve(workDir, "projects", "habit-cli"),
+        workspacePath: createManagedWorkspacePath(workDir),
         status: "failed",
       },
       trackerIssue: {
@@ -576,6 +593,7 @@ describe("projectProvisioning", () => {
   it("provisions a managed project and records active registry state on success", async () => {
     const workDir = await createTempWorkDir();
     tempDirs.push(workDir);
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
     const issue = createProvisioningIssue(
       buildProjectProvisioningIssueBody({
         owner: "evolvo-auto",
@@ -583,7 +601,7 @@ describe("projectProvisioning", () => {
         slug: "habit-cli",
         repositoryName: "habit-cli",
         issueLabel: "project:habit-cli",
-        workspaceRelativePath: "projects/habit-cli",
+        workspacePath: createManagedWorkspacePath(workDir),
         requestedBy: "discord:operator-1",
         requestedAt: "2026-03-07T12:00:00.000Z",
       }),
@@ -604,6 +622,7 @@ describe("projectProvisioning", () => {
       trackerOwner: "evolvo-auto",
       trackerRepo: "evolvo-ts",
       adminClient,
+      workspaceRoot: workDir,
     });
 
     expect(isProjectProvisioningRequestIssue(issue)).toBe(true);
@@ -632,7 +651,7 @@ describe("projectProvisioning", () => {
         }),
       }),
     );
-    expect(resolve(workDir, "projects", "habit-cli")).toBe(result.record.cwd);
+    expect(createManagedWorkspacePath(workDir)).toBe(result.record.cwd);
     expect(JSON.parse(await readFile(getActiveProjectStatePath(workDir), "utf8"))).toEqual({
       version: 2,
       activeProjectSlug: "habit-cli",
@@ -641,12 +660,15 @@ describe("projectProvisioning", () => {
       requestedBy: "discord:operator-1",
       source: "project-provisioning",
     });
+    expect(logSpy).toHaveBeenCalledWith(
+      `[project-workspace] resolved ${createManagedWorkspacePath(workDir)}; created directory; ${createManagedWorkspacePath(workDir)} is now the active working directory for project habit-cli.`,
+    );
   });
 
   it("preserves partial success in failed registry state when workspace preparation fails", async () => {
     const workDir = await createTempWorkDir();
     tempDirs.push(workDir);
-    await writeFile(join(workDir, "projects"), "not a directory", "utf8");
+    await writeFile(createManagedWorkspacePath(workDir), "not a directory", "utf8");
     const issue = createProvisioningIssue(
       buildProjectProvisioningIssueBody({
         owner: "evolvo-auto",
@@ -654,7 +676,7 @@ describe("projectProvisioning", () => {
         slug: "habit-cli",
         repositoryName: "habit-cli",
         issueLabel: "project:habit-cli",
-        workspaceRelativePath: "projects/habit-cli",
+        workspacePath: createManagedWorkspacePath(workDir),
         requestedBy: "discord:operator-1",
         requestedAt: "2026-03-07T12:00:00.000Z",
       }),
@@ -675,6 +697,7 @@ describe("projectProvisioning", () => {
       trackerOwner: "evolvo-auto",
       trackerRepo: "evolvo-ts",
       adminClient,
+      workspaceRoot: workDir,
     });
 
     expect(result.ok).toBe(false);

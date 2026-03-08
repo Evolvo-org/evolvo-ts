@@ -450,7 +450,7 @@ describe("runCodingAgent", () => {
 
     const { configureCodingAgentExecutionContext, runCodingAgent } = await import("./runCodingAgent.js");
     configureCodingAgentExecutionContext({
-      workDir: "/tmp/evolvo/projects/habit-cli",
+      workDir: "/home/paddy/habit-cli",
       internalRepositoryUrls: [
         "https://github.com/evolvo-auto/evolvo-ts",
         "https://github.com/evolvo-auto/habit-cli",
@@ -460,7 +460,7 @@ describe("runCodingAgent", () => {
 
     expect(startThreadMock).toHaveBeenCalledWith({
       sandboxMode: "workspace-write",
-      workingDirectory: "/tmp/evolvo/projects/habit-cli",
+      workingDirectory: "/home/paddy/habit-cli",
     });
     expect(result.summary.externalRepositories).toEqual([]);
     expect(result.summary.externalPullRequests).toEqual([]);

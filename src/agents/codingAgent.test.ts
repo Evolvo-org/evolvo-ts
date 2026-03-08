@@ -72,11 +72,11 @@ describe("buildCodingPrompt", () => {
   });
 
   it("builds thread options for a resolved project working directory", () => {
-    const options = buildCodingAgentThreadOptions("/tmp/evolvo/projects/habit-cli");
+    const options = buildCodingAgentThreadOptions("/home/paddy/habit-cli");
 
     expect(options).toEqual({
       ...CODING_AGENT_THREAD_OPTIONS,
-      workingDirectory: "/tmp/evolvo/projects/habit-cli",
+      workingDirectory: "/home/paddy/habit-cli",
     });
   });
 });

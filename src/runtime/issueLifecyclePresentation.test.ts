@@ -81,7 +81,7 @@ describe("issueLifecyclePresentation", () => {
           url: "https://github.com/evolvo-auto/habit-cli",
           defaultBranch: "main",
         },
-        cwd: "/tmp/evolvo/projects/habit-cli",
+        cwd: "/home/paddy/habit-cli",
         status: "active",
         sourceIssueNumber: 318,
         createdAt: "2026-03-07T12:00:00.000Z",
