@@ -8,6 +8,7 @@ import {
 } from "../issues/projectProvisioningIssue.js";
 import { deployProjectRepositoryWithVercel, type ProjectRepositoryDeploymentResult } from "../deployment/vercelDeployment.js";
 import type { IssueSummary, TaskIssueManager } from "../issues/taskIssueManager.js";
+import type { GitHubProjectsV2Client } from "../github/githubProjectsV2.js";
 import { setActiveProjectState } from "./activeProjectState.js";
 import { activateProjectInState } from "./activeProjectsState.js";
 import {
@@ -22,6 +23,7 @@ import {
   type ProjectRecord,
 } from "./projectRegistry.js";
 import { createDefaultProjectWorkflow } from "./projectWorkflow.js";
+import { ensureProjectBoardRegistration } from "./projectBoards.js";
 
 type ProjectProvisioningIssueManager = Pick<TaskIssueManager, "createIssue" | "listOpenIssues">;
 
@@ -105,7 +107,7 @@ export type ProjectProvisioningExecutionResult = {
   ok: boolean;
   metadata: ProjectProvisioningIssueMetadata;
   record: ProjectRecord;
-  failureStep: "registry" | "label" | "repository" | "workspace" | "deployment" | "active-project" | null;
+  failureStep: "registry" | "label" | "repository" | "workflow" | "workspace" | "deployment" | "active-project" | null;
   workspaceAction: "created" | "reused" | null;
   deployment: ProjectRepositoryDeploymentResult | null;
   message: string;
@@ -573,6 +575,7 @@ export async function executeProjectProvisioningIssue(options: {
   trackerOwner: string;
   trackerRepo: string;
   adminClient: ProjectProvisioningAdminClient;
+  boardsClient?: Pick<GitHubProjectsV2Client, "ensureProjectBoard">;
   workspaceRoot?: string;
   deployRepository?: typeof deployProjectRepositoryWithVercel;
 }): Promise<ProjectProvisioningExecutionResult> {
@@ -690,6 +693,52 @@ export async function executeProjectProvisioningIssue(options: {
       deployment,
       message,
     };
+  }
+
+  if (options.boardsClient) {
+    try {
+      const boardResult = await ensureProjectBoardRegistration({
+        workDir: options.workDir,
+        defaultProject,
+        project: record,
+        boardsClient: options.boardsClient,
+      });
+      record = boardResult.project;
+      if (!boardResult.ok) {
+        return {
+          ok: false,
+          metadata,
+          record,
+          failureStep: "workflow",
+          workspaceAction,
+          deployment,
+          message: boardResult.message,
+        };
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unknown GitHub Projects provisioning error.";
+      await persistRecord(
+        {
+          workflow: {
+            ...record.workflow,
+            boardProvisioned: false,
+            lastError: message,
+            lastSyncedAt: new Date().toISOString(),
+          },
+          status: "failed",
+        },
+        { lastError: message },
+      ).catch(() => undefined);
+      return {
+        ok: false,
+        metadata,
+        record,
+        failureStep: "workflow",
+        workspaceAction,
+        deployment,
+        message,
+      };
+    }
   }
 
   try {
