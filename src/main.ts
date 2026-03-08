@@ -82,6 +82,11 @@ import {
   resolveProjectExecutionContextForIssue,
 } from "./projects/projectExecutionContext.js";
 import {
+  ProjectRepositoryIssueInspector,
+  buildProjectRepositoryIssueInspectionLogLines,
+  type ProjectRepositoryIssueState,
+} from "./projects/projectRepositoryIssues.js";
+import {
   buildDefaultProjectContext,
   ensureProjectRegistry,
   findProjectBySlug,
@@ -300,6 +305,7 @@ export async function main(): Promise<void> {
   const githubClient = new GitHubClient(githubConfig);
   const issueManager = new TaskIssueManager(githubClient);
   const adminClient = new GitHubAdminClient(githubClient, githubConfig);
+  const projectRepositoryIssueInspector = new ProjectRepositoryIssueInspector(githubClient);
   const defaultProjectContext = buildDefaultProjectContext({
     owner: GITHUB_OWNER,
     repo: GITHUB_REPO,
@@ -741,7 +747,29 @@ export async function main(): Promise<void> {
             break;
           }
 
-          const prompt = buildPromptFromIssue(selectedIssue);
+          let projectRepositoryIssueState: ProjectRepositoryIssueState | null = null;
+          if (executionContext.project.kind === "managed") {
+            try {
+              projectRepositoryIssueState = await projectRepositoryIssueInspector.inspectProject(executionContext.project);
+              for (const logLine of buildProjectRepositoryIssueInspectionLogLines(projectRepositoryIssueState)) {
+                console.log(logLine);
+              }
+              console.log(
+                `[project-issues] using ${projectRepositoryIssueState.repository.reference} issue state to shape execution planning for tracker issue #${selectedIssue.number}.`,
+              );
+            } catch (error) {
+              const repositoryReference =
+                `${executionContext.project.executionRepo.owner}/${executionContext.project.executionRepo.repo}`;
+              const message = error instanceof Error ? error.message : "unknown error";
+              console.error(
+                `[project-issues] failed to inspect project=${executionContext.project.slug} repository=${repositoryReference}: ${message}`,
+              );
+            }
+          }
+
+          const prompt = buildPromptFromIssue(selectedIssue, {
+            projectRepositoryIssueState,
+          });
           console.log(`Prompt: ${prompt}`);
           configureCodingAgentExecutionContext({
             workDir: executionContext.project.cwd,

@@ -44,6 +44,9 @@ const readActiveProjectStateMock = vi.fn();
 const stopActiveProjectStateMock = vi.fn();
 const resolveProjectExecutionContextForIssueMock = vi.fn();
 const buildProjectRoutingBlockedCommentMock = vi.fn();
+const inspectProjectRepositoryIssuesMock = vi.fn();
+const buildProjectRepositoryIssueInspectionLogLinesMock = vi.fn();
+const buildProjectRepositoryIssuePromptSectionMock = vi.fn();
 const handleStartProjectCommandMock = vi.fn();
 const executeProjectProvisioningIssueMock = vi.fn();
 const isProjectProvisioningRequestIssueMock = vi.fn();
@@ -211,6 +214,14 @@ vi.mock("./projects/projectExecutionContext.js", () => ({
   PROJECT_ROUTING_BLOCKED_LABEL: "blocked",
   buildProjectRoutingBlockedComment: buildProjectRoutingBlockedCommentMock,
   resolveProjectExecutionContextForIssue: resolveProjectExecutionContextForIssueMock,
+}));
+
+vi.mock("./projects/projectRepositoryIssues.js", () => ({
+  ProjectRepositoryIssueInspector: class {
+    inspectProject = inspectProjectRepositoryIssuesMock;
+  },
+  buildProjectRepositoryIssueInspectionLogLines: buildProjectRepositoryIssueInspectionLogLinesMock,
+  buildProjectRepositoryIssuePromptSection: buildProjectRepositoryIssuePromptSectionMock,
 }));
 
 vi.mock("./issues/runIssueCommand.js", () => ({
@@ -390,6 +401,27 @@ describe("main", () => {
     });
     buildProjectRoutingBlockedCommentMock.mockReset();
     buildProjectRoutingBlockedCommentMock.mockReturnValue("## Project Routing Blocked");
+    inspectProjectRepositoryIssuesMock.mockReset();
+    inspectProjectRepositoryIssuesMock.mockResolvedValue({
+      projectSlug: "habit-cli",
+      repository: {
+        owner: "owner",
+        repo: "habit-cli",
+        reference: "owner/habit-cli",
+        url: "https://github.com/owner/habit-cli",
+      },
+      openIssues: [],
+      recentClosedIssues: [],
+    });
+    buildProjectRepositoryIssueInspectionLogLinesMock.mockReset();
+    buildProjectRepositoryIssueInspectionLogLinesMock.mockReturnValue([
+      "[project-issues] inspected project=habit-cli repository=owner/habit-cli open=0 recentClosed=0",
+    ]);
+    buildProjectRepositoryIssuePromptSectionMock.mockReset();
+    buildProjectRepositoryIssuePromptSectionMock.mockImplementation((state: { repository: { reference: string } }) => [
+      "## Project Repository Issue State",
+      `- Project repository: ${state.repository.reference}`,
+    ].join("\n"));
     runIssueCommandMock.mockReset();
     runIssueCommandMock.mockResolvedValue(false);
     getGitHubConfigMock.mockReset();
@@ -947,7 +979,20 @@ describe("main", () => {
       14,
       expect.stringContaining("Execution repository: `owner/habit-cli`."),
     );
-    expect(runCodingAgentMock).toHaveBeenCalledWith("Issue #14: Managed repo issue\n\nUse project context");
+    expect(inspectProjectRepositoryIssuesMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        slug: "habit-cli",
+      }),
+    );
+    expect(console.log).toHaveBeenCalledWith(
+      "[project-issues] inspected project=habit-cli repository=owner/habit-cli open=0 recentClosed=0",
+    );
+    expect(runCodingAgentMock).toHaveBeenCalledWith(
+      expect.stringContaining("## Project Repository Issue State"),
+    );
+    expect(runCodingAgentMock).toHaveBeenCalledWith(
+      expect.stringContaining("Project repository: owner/habit-cli"),
+    );
   });
 
   it("prefers issues for the active project when one is selected", async () => {
@@ -991,7 +1036,12 @@ describe("main", () => {
     await main();
 
     expect(markInProgressMock).toHaveBeenCalledWith(22);
-    expect(runCodingAgentMock).toHaveBeenCalledWith("Issue #22: Managed issue\n\nproject");
+    expect(runCodingAgentMock).toHaveBeenCalledWith(
+      expect.stringContaining("Issue #22: Managed issue\n\nproject"),
+    );
+    expect(runCodingAgentMock).toHaveBeenCalledWith(
+      expect.stringContaining("## Project Repository Issue State"),
+    );
   });
 
   it("keeps the runtime online and idle when the active project is stopped", async () => {

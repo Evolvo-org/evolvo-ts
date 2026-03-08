@@ -9,6 +9,10 @@ import {
   isChallengeRetryReadyIssue,
 } from "../issues/challengeIssue.js";
 import { PROJECT_LABEL_PREFIX } from "../projects/projectNaming.js";
+import {
+  buildProjectRepositoryIssuePromptSection,
+  type ProjectRepositoryIssueState,
+} from "../projects/projectRepositoryIssues.js";
 
 const OUTDATED_LABELS = new Set(["outdated", "obsolete", "wontfix", "invalid", "duplicate"]);
 const MIN_REPLENISH_ISSUES = 3;
@@ -429,9 +433,15 @@ export function isOutdatedIssue(issue: IssueSummary): boolean {
   return issue.labels.some((label) => OUTDATED_LABELS.has(label.toLowerCase()));
 }
 
-export function buildPromptFromIssue(issue: IssueSummary): string {
+export function buildPromptFromIssue(
+  issue: IssueSummary,
+  options: { projectRepositoryIssueState?: ProjectRepositoryIssueState | null } = {},
+): string {
   const description = issue.description.trim() || "No description provided.";
-  return `Issue #${issue.number}: ${issue.title}\n\n${description}`;
+  const projectRepositoryIssueSection = options.projectRepositoryIssueState
+    ? `\n\n${buildProjectRepositoryIssuePromptSection(options.projectRepositoryIssueState)}`
+    : "";
+  return `Issue #${issue.number}: ${issue.title}\n\n${description}${projectRepositoryIssueSection}`;
 }
 
 export function formatIssueForLog(issue: IssueSummary): string {

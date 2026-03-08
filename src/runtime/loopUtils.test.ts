@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { GitHubApiError } from "../github/githubClient.js";
 import {
+  buildPromptFromIssue,
   getRunLoopRetryDelayMs,
   isTransientGitHubError,
   prioritizeIssuesForWork,
@@ -203,5 +204,51 @@ describe("loopUtils retry handling", () => {
     );
 
     expect(selected?.number).toBe(8);
+  });
+
+  it("appends managed project repository issue state to coding prompts", () => {
+    const prompt = buildPromptFromIssue(
+      {
+        number: 44,
+        title: "Inspect managed project queue",
+        description: "Use project context",
+        state: "open",
+        labels: ["project:habit-cli"],
+      },
+      {
+        projectRepositoryIssueState: {
+          projectSlug: "habit-cli",
+          repository: {
+            owner: "owner",
+            repo: "habit-cli",
+            reference: "owner/habit-cli",
+            url: "https://github.com/owner/habit-cli",
+          },
+          openIssues: [
+            {
+              number: 9,
+              title: "Existing project thread",
+              description: "Still open",
+              state: "open",
+              labels: [],
+            },
+          ],
+          recentClosedIssues: [
+            {
+              number: 7,
+              title: "Recently finished project task",
+              description: "Closed",
+              state: "closed",
+              labels: [],
+            },
+          ],
+        },
+      },
+    );
+
+    expect(prompt).toContain("## Project Repository Issue State");
+    expect(prompt).toContain("Project repository: owner/habit-cli");
+    expect(prompt).toContain("- #9 Existing project thread");
+    expect(prompt).toContain("- #7 Recently finished project task");
   });
 });
