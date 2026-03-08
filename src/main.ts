@@ -9,6 +9,7 @@ import { WORK_DIR } from "./constants/workDir.js";
 import { GitHubAdminClient } from "./github/githubAdminClient.js";
 import { GitHubClient } from "./github/githubClient.js";
 import { getGitHubConfig } from "./github/githubConfig.js";
+import { GitHubProjectsV2Client } from "./github/githubProjectsV2.js";
 import {
   buildLifecycleStateComment,
   transitionCanonicalLifecycleState,
@@ -100,6 +101,7 @@ import {
   findProjectBySlug,
   readProjectRegistry,
 } from "./projects/projectRegistry.js";
+import { ensureProjectBoardsForRegistry } from "./projects/projectBoards.js";
 import {
   buildRuntimeStatusSnapshot,
   type RuntimeStatusIssue,
@@ -439,6 +441,7 @@ export async function main(): Promise<void> {
   const githubClient = new GitHubClient(githubConfig);
   const issueManager = new TaskIssueManager(githubClient);
   const adminClient = new GitHubAdminClient(githubClient, githubConfig);
+  const projectsClient = new GitHubProjectsV2Client(githubClient);
   const projectRepositoryIssueInspector = new ProjectRepositoryIssueInspector(githubClient);
   const defaultProjectContext = buildDefaultProjectContext({
     owner: GITHUB_OWNER,
@@ -606,6 +609,22 @@ export async function main(): Promise<void> {
   console.log(`Hello from ${GITHUB_OWNER}/${GITHUB_REPO}!`);
   console.log(`Working directory: ${WORK_DIR}`);
   await ensureProjectRegistry(WORK_DIR, defaultProjectContext);
+  const boardProvisioning = await ensureProjectBoardsForRegistry({
+    workDir: WORK_DIR,
+    defaultProject: defaultProjectContext,
+    boardsClient: projectsClient,
+  });
+  for (const result of boardProvisioning.results) {
+    if (result.ok) {
+      console.log(
+        `[project-board] ensured ${result.project.slug} board ${result.project.workflow.boardUrl ?? "unknown-url"}.`,
+      );
+    } else {
+      console.error(
+        `[project-board] failed to ensure board for ${result.project.slug}: ${result.message}`,
+      );
+    }
+  }
   await signalRestartReadinessIfRequested(WORK_DIR);
   await runDiscordOperatorControlStartupCheck();
   const gracefulShutdownListener = await startDiscordGracefulShutdownListener(WORK_DIR, discordHandlers);
@@ -1028,6 +1047,7 @@ export async function main(): Promise<void> {
               trackerOwner: GITHUB_OWNER,
               trackerRepo: GITHUB_REPO,
               adminClient,
+              boardsClient: projectsClient,
             });
             await addIssueLifecycleComment(
               selectedIssueManager,
