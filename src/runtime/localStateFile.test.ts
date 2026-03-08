@@ -1,8 +1,11 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { readRecoverableJsonState } from "./localStateFile.js";
+import {
+  readRecoverableJsonState,
+  writeAtomicJsonStateIfMissing,
+} from "./localStateFile.js";
 
 async function createTempWorkDir(): Promise<string> {
   return mkdtemp(join(tmpdir(), "local-state-file-"));
@@ -30,6 +33,41 @@ describe("localStateFile", () => {
     });
 
     expect(state).toEqual({ value: 1 });
+  });
+
+  it("creates missing state files atomically without leaving temp files behind", async () => {
+    vi.useFakeTimers();
+    const writeAtMs = new Date("2026-03-08T01:00:00.000Z").getTime();
+    vi.setSystemTime(writeAtMs);
+    const workDir = await createTempWorkDir();
+    tempDirs.push(workDir);
+    const statePath = join(workDir, ".evolvo", "test-state.json");
+
+    await expect(writeAtomicJsonStateIfMissing(statePath, { value: 2 })).resolves.toBe(true);
+    await expect(readFile(statePath, "utf8")).resolves.toBe(`${JSON.stringify({ value: 2 }, null, 2)}\n`);
+    await expect(
+      access(join(workDir, ".evolvo", `test-state.tmp-${writeAtMs}-${process.pid}.json`)),
+    ).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(readdir(join(workDir, ".evolvo"))).resolves.toEqual(["test-state.json"]);
+  });
+
+  it("does not overwrite existing state when create-once atomic writes race", async () => {
+    vi.useFakeTimers();
+    const writeAtMs = new Date("2026-03-08T01:05:00.000Z").getTime();
+    vi.setSystemTime(writeAtMs);
+    const workDir = await createTempWorkDir();
+    tempDirs.push(workDir);
+    const evolvoDir = join(workDir, ".evolvo");
+    const statePath = join(evolvoDir, "test-state.json");
+    await mkdir(evolvoDir, { recursive: true });
+    await writeFile(statePath, `${JSON.stringify({ value: 3 }, null, 2)}\n`, "utf8");
+
+    await expect(writeAtomicJsonStateIfMissing(statePath, { value: 4 })).resolves.toBe(false);
+    await expect(readFile(statePath, "utf8")).resolves.toBe(`${JSON.stringify({ value: 3 }, null, 2)}\n`);
+    await expect(
+      access(join(evolvoDir, `test-state.tmp-${writeAtMs}-${process.pid}.json`)),
+    ).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(readdir(evolvoDir)).resolves.toEqual(["test-state.json"]);
   });
 
   it("preserves malformed JSON, rewrites the file with defaults, and warns", async () => {

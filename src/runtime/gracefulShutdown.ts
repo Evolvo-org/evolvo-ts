@@ -1,6 +1,6 @@
 import { promises as fs } from "node:fs";
 import { basename, dirname, extname, join } from "node:path";
-import { writeAtomicJsonState } from "./localStateFile.js";
+import { writeAtomicJsonState, writeAtomicJsonStateIfMissing } from "./localStateFile.js";
 
 const EVOLVO_DIRECTORY_NAME = ".evolvo";
 const GRACEFUL_SHUTDOWN_REQUEST_FILE_NAME = "graceful-shutdown-request.json";
@@ -304,27 +304,9 @@ export async function recordDiscordControlCommandReceipt(
   }
 
   const path = getDiscordControlReceiptPath(workDir, input.command, messageId);
-  try {
-    await fs.mkdir(dirname(path), { recursive: true });
-    await fs.writeFile(
-      path,
-      `${JSON.stringify({
-        command: input.command,
-        messageId,
-        recordedAt: isNonEmptyString(input.recordedAt) ? input.recordedAt.trim() : new Date().toISOString(),
-      }, null, 2)}\n`,
-      {
-        encoding: "utf8",
-        flag: "wx",
-      },
-    );
-    return true;
-  } catch (error) {
-    const errorCode = (error as NodeJS.ErrnoException).code;
-    if (errorCode === "EEXIST") {
-      return false;
-    }
-
-    throw error;
-  }
+  return writeAtomicJsonStateIfMissing(path, {
+    command: input.command,
+    messageId,
+    recordedAt: isNonEmptyString(input.recordedAt) ? input.recordedAt.trim() : new Date().toISOString(),
+  });
 }

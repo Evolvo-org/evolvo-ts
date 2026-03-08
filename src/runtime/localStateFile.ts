@@ -35,15 +35,37 @@ function buildTempStatePath(statePath: string, atMs = Date.now()): string {
   );
 }
 
+function serializeJsonState(state: unknown): string {
+  return `${JSON.stringify(state, null, 2)}\n`;
+}
+
 export async function writeAtomicJsonState(statePath: string, state: unknown): Promise<void> {
   await fs.mkdir(dirname(statePath), { recursive: true });
   const tempPath = buildTempStatePath(statePath);
   try {
-    await fs.writeFile(tempPath, `${JSON.stringify(state, null, 2)}\n`, "utf8");
+    await fs.writeFile(tempPath, serializeJsonState(state), "utf8");
     await fs.rename(tempPath, statePath);
   } catch (error) {
     await fs.rm(tempPath, { force: true }).catch(() => undefined);
     throw error;
+  }
+}
+
+export async function writeAtomicJsonStateIfMissing(statePath: string, state: unknown): Promise<boolean> {
+  await fs.mkdir(dirname(statePath), { recursive: true });
+  const tempPath = buildTempStatePath(statePath);
+  try {
+    await fs.writeFile(tempPath, serializeJsonState(state), "utf8");
+    await fs.link(tempPath, statePath);
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "EEXIST") {
+      return false;
+    }
+
+    throw error;
+  } finally {
+    await fs.rm(tempPath, { force: true }).catch(() => undefined);
   }
 }
 

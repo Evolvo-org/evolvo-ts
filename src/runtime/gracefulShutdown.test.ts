@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -228,6 +228,7 @@ describe("gracefulShutdown", () => {
   it("records Discord control receipts once per message id", async () => {
     const workDir = await createTempWorkDir();
     tempDirs.push(workDir);
+    const receiptPath = join(workDir, ".evolvo", "discord-control-receipts", "start-project-9100.json");
 
     await expect(
       recordDiscordControlCommandReceipt(workDir, {
@@ -243,5 +244,42 @@ describe("gracefulShutdown", () => {
         recordedAt: "2026-03-07T14:05:00.000Z",
       }),
     ).resolves.toBe(false);
+    await expect(readFile(receiptPath, "utf8")).resolves.toBe(
+      `${JSON.stringify({
+        command: "start-project",
+        messageId: "9100",
+        recordedAt: "2026-03-07T14:00:00.000Z",
+      }, null, 2)}\n`,
+    );
+  });
+
+  it("records Discord control receipts atomically without leaving temp files behind", async () => {
+    vi.useFakeTimers();
+    const writeAtMs = new Date("2026-03-08T01:10:00.000Z").getTime();
+    vi.setSystemTime(writeAtMs);
+    const workDir = await createTempWorkDir();
+    tempDirs.push(workDir);
+    const receiptDir = join(workDir, ".evolvo", "discord-control-receipts");
+    const receiptPath = join(receiptDir, "start-project-9150.json");
+
+    await expect(
+      recordDiscordControlCommandReceipt(workDir, {
+        command: "start-project",
+        messageId: "9150",
+        recordedAt: "2026-03-07T14:10:00.000Z",
+      }),
+    ).resolves.toBe(true);
+
+    await expect(readFile(receiptPath, "utf8")).resolves.toBe(
+      `${JSON.stringify({
+        command: "start-project",
+        messageId: "9150",
+        recordedAt: "2026-03-07T14:10:00.000Z",
+      }, null, 2)}\n`,
+    );
+    await expect(
+      access(join(receiptDir, `start-project-9150.tmp-${writeAtMs}-${process.pid}.json`)),
+    ).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(readdir(receiptDir)).resolves.toEqual(["start-project-9150.json"]);
   });
 });
