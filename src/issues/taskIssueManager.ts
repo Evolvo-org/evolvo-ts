@@ -4,9 +4,18 @@ const IN_PROGRESS_LABEL = "in progress";
 const COMPLETED_LABEL = "completed";
 const FOLLOW_UP_TITLE_SUFFIX_PATTERN = /\s*\(follow-up\s+\d+\)\s*$/i;
 export const PLANNED_ISSUE_RECENT_CLOSED_LOOKBACK_LIMIT = 300;
+const AUTHORIZED_ISSUE_AUTHORS = new Set(["evolvo-auto", "ptekspy"]);
+const UNAUTHORIZED_ISSUE_CLOSURE_COMMENT = [
+  "Closing automatically because this issue was created by an unauthorized author.",
+  "Evolvo only accepts work from approved issue authors: `evolvo-auto` and `ptekspy`.",
+].join("\n\n");
 
 type GitHubLabel = {
   name: string;
+};
+
+type GitHubIssueUser = {
+  login?: string | null;
 };
 
 type GitHubIssue = {
@@ -15,6 +24,7 @@ type GitHubIssue = {
   body: string | null;
   state: "open" | "closed";
   labels: GitHubLabel[];
+  user?: GitHubIssueUser | null;
   pull_request?: unknown;
 };
 
@@ -40,6 +50,16 @@ export type ReplenishIssuesOptions = {
 
 export type ReplenishIssuesResult = {
   created: IssueSummary[];
+};
+
+export type UnauthorizedIssueClosureResult = {
+  issueNumber: number;
+  issueTitle: string;
+  authorLogin: string | null;
+  commentAdded: boolean;
+  closed: boolean;
+  closeMessage: string;
+  commentMessage: string | null;
 };
 
 export type PlannedIssueDraft = {
@@ -280,6 +300,15 @@ function hasLabel(issue: GitHubIssue, labelName: string): boolean {
   return issue.labels.some((label) => label.name.toLowerCase() === labelName.toLowerCase());
 }
 
+function normalizeIssueAuthorLogin(issue: GitHubIssue): string | null {
+  const login = issue.user?.login?.trim();
+  return login && login.length > 0 ? login : null;
+}
+
+function isAuthorizedIssueAuthor(authorLogin: string | null): boolean {
+  return authorLogin !== null && AUTHORIZED_ISSUE_AUTHORS.has(authorLogin.toLowerCase());
+}
+
 function buildLabels(issue: GitHubIssue, options: { inProgress: boolean; completed: boolean }): string[] {
   const names = issue.labels.map((label) => label.name);
   const withoutManaged = names.filter(
@@ -319,7 +348,7 @@ export class TaskIssueManager {
     };
   }
 
-  public async listOpenIssues(): Promise<IssueSummary[]> {
+  private async listRawOpenIssues(): Promise<GitHubIssue[]> {
     const issues: GitHubIssue[] = [];
     let page = 1;
 
@@ -336,7 +365,77 @@ export class TaskIssueManager {
       page += 1;
     }
 
-    return issues.filter((issue) => issue.pull_request === undefined).map(formatIssue);
+    return issues.filter((issue) => issue.pull_request === undefined);
+  }
+
+  private async closeUnauthorizedIssue(issue: GitHubIssue): Promise<UnauthorizedIssueClosureResult> {
+    let commentAdded = false;
+    let commentMessage: string | null = null;
+
+    try {
+      await this.client.post(`/${issue.number}/comments`, {
+        body: UNAUTHORIZED_ISSUE_CLOSURE_COMMENT,
+      });
+      commentAdded = true;
+      commentMessage = `Added unauthorized-author closure comment to issue #${issue.number}.`;
+    } catch (error) {
+      commentMessage = error instanceof Error
+        ? `Failed to add unauthorized-author closure comment to issue #${issue.number}: ${error.message}`
+        : `Failed to add unauthorized-author closure comment to issue #${issue.number}: unknown error`;
+    }
+
+    try {
+      await this.client.patch<GitHubIssue>(`/${issue.number}`, { state: "closed" });
+      return {
+        issueNumber: issue.number,
+        issueTitle: issue.title,
+        authorLogin: normalizeIssueAuthorLogin(issue),
+        commentAdded,
+        closed: true,
+        closeMessage: `Issue #${issue.number} closed successfully.`,
+        commentMessage,
+      };
+    } catch (error) {
+      return {
+        issueNumber: issue.number,
+        issueTitle: issue.title,
+        authorLogin: normalizeIssueAuthorLogin(issue),
+        commentAdded,
+        closed: false,
+        closeMessage: error instanceof Error
+          ? `Failed to close issue #${issue.number}: ${error.message}`
+          : `Failed to close issue #${issue.number}: unknown error`,
+        commentMessage,
+      };
+    }
+  }
+
+  public async listAuthorizedOpenIssues(): Promise<{
+    issues: IssueSummary[];
+    unauthorizedClosures: UnauthorizedIssueClosureResult[];
+  }> {
+    const issues = await this.listRawOpenIssues();
+    const authorizedIssues: IssueSummary[] = [];
+    const unauthorizedClosures: UnauthorizedIssueClosureResult[] = [];
+
+    for (const issue of issues) {
+      const authorLogin = normalizeIssueAuthorLogin(issue);
+      if (isAuthorizedIssueAuthor(authorLogin)) {
+        authorizedIssues.push(formatIssue(issue));
+        continue;
+      }
+
+      unauthorizedClosures.push(await this.closeUnauthorizedIssue(issue));
+    }
+
+    return {
+      issues: authorizedIssues,
+      unauthorizedClosures,
+    };
+  }
+
+  public async listOpenIssues(): Promise<IssueSummary[]> {
+    return (await this.listRawOpenIssues()).map(formatIssue);
   }
 
   public async listRecentClosedIssues(limit = TaskIssueManager.ISSUES_PER_PAGE): Promise<IssueSummary[]> {
