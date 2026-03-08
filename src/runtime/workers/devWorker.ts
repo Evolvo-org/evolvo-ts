@@ -15,14 +15,14 @@ import { buildPromptFromIssue } from "../loopUtils.js";
 import { upsertWorkflowWorkItemRecord } from "../workflowWorkItemState.js";
 import { claimProjectBoardItemForWorker, clearWorkflowWorkerClaim } from "./boardClaims.js";
 import { isWorkerActiveProject, selectLowestIssueStageItem } from "./boardQueries.js";
-
-const IN_DEV_LIMIT_PER_PROJECT = 1;
+import { getWorkflowLimitConfig } from "./workflowLimits.js";
 
 function logDevWorker(projectSlug: string, message: string): void {
   console.log(`[worker][dev][${projectSlug}] ${message}`);
 }
 
 function findRunnableProject(inventory: StagedWorkInventory, projectSlug: string): StagedProjectInventory | null {
+  const limits = getWorkflowLimitConfig();
   const projectInventory = inventory.projects.find((project) => project.project.slug === projectSlug) ?? null;
   if (!projectInventory || !isWorkerActiveProject(projectInventory)) {
     return null;
@@ -32,7 +32,7 @@ function findRunnableProject(inventory: StagedWorkInventory, projectSlug: string
     return null;
   }
 
-  if (projectInventory.countsByStage["In Dev"] >= IN_DEV_LIMIT_PER_PROJECT) {
+  if (projectInventory.countsByStage["In Dev"] >= limits.inDevLimitPerProject) {
     return null;
   }
 

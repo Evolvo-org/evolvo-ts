@@ -15,8 +15,14 @@ import {
 import {
   buildRuntimeStatusSnapshot,
   type RuntimeStatusProject,
+  type RuntimeStatusQueueTotals,
+  type RuntimeStatusWorker,
 } from "./runtimeStatus.js";
 import type { TaskIssueManager } from "../issues/taskIssueManager.js";
+import { buildStagedWorkInventory } from "../issues/stagedWorkInventory.js";
+import type { GitHubProjectsV2Client } from "../github/githubProjectsV2.js";
+import { readWorkflowWorkerState } from "./workers/workflowWorkerState.js";
+import { getWorkflowLimitConfig } from "./workers/workflowLimits.js";
 import type {
   DiscordControlHandlers,
   StatusCommandResult,
@@ -101,8 +107,53 @@ export function createDiscordControlHandlers(options: {
   trackerRepo: string;
   defaultProjectContext: DefaultProjectContext;
   issueManager: TaskIssueManager;
+  boardsClient: GitHubProjectsV2Client;
   runtimeState: RuntimeExecutionState;
 }): DiscordControlHandlers {
+  const buildEmptyQueueTotals = (): RuntimeStatusQueueTotals => ({
+    Inbox: 0,
+    Planning: 0,
+    "Ready for Dev": 0,
+    "In Dev": 0,
+    "Ready for Review": 0,
+    "In Review": 0,
+    "Ready for Release": 0,
+    Releasing: 0,
+    Blocked: 0,
+    Done: 0,
+  });
+
+  const summarizeWorkers = (workers: Awaited<ReturnType<typeof readWorkflowWorkerState>>["workers"]): RuntimeStatusWorker[] =>
+    workers
+      .slice()
+      .sort((left, right) => left.workerId.localeCompare(right.workerId))
+      .map((worker) => ({
+        workerId: worker.workerId,
+        role: worker.role,
+        projectSlug: worker.projectSlug ?? null,
+        claim: worker.currentClaim?.issueNumber !== null && worker.currentClaim?.issueNumber !== undefined
+          ? `#${worker.currentClaim.issueNumber} ${worker.currentClaim.stage ?? "unknown"}`
+          : null,
+        restartCount: worker.restartCount,
+      }));
+
+  const summarizeQueueTotals = (projects: Awaited<ReturnType<typeof buildStagedWorkInventory>>["projects"]): RuntimeStatusQueueTotals => {
+    const totals = buildEmptyQueueTotals();
+    for (const project of projects) {
+      totals.Inbox += project.countsByStage.Inbox;
+      totals.Planning += project.countsByStage.Planning;
+      totals["Ready for Dev"] += project.countsByStage["Ready for Dev"];
+      totals["In Dev"] += project.countsByStage["In Dev"];
+      totals["Ready for Review"] += project.countsByStage["Ready for Review"];
+      totals["In Review"] += project.countsByStage["In Review"];
+      totals["Ready for Release"] += project.countsByStage["Ready for Release"];
+      totals.Releasing += project.countsByStage.Releasing;
+      totals.Blocked += project.countsByStage.Blocked;
+      totals.Done += project.countsByStage.Done;
+    }
+    return totals;
+  };
+
   return {
     onListRegisteredProjects: async () => {
       const registry = await readProjectRegistry(options.workDir, options.defaultProjectContext);
@@ -253,10 +304,21 @@ export function createDiscordControlHandlers(options: {
       return result;
     },
     onStatus: async (request): Promise<StatusCommandResult> => {
-      const [activeProjects, registry, projectActivityState] = await Promise.all([
+      const [activeProjects, registry, projectActivityState, workerState, inventory] = await Promise.all([
         resolveActiveStatusProjects(options.workDir, options.defaultProjectContext),
         readProjectRegistry(options.workDir, options.defaultProjectContext),
         readProjectActivityState(options.workDir),
+        readWorkflowWorkerState(options.workDir),
+        buildStagedWorkInventory({
+          workDir: options.workDir,
+          defaultProject: options.defaultProjectContext,
+          trackerIssueManager: options.issueManager,
+          boardsClient: options.boardsClient,
+        }).catch((error) => {
+          const message = error instanceof Error ? error.message : "unknown error";
+          console.error(`[status] could not build staged work inventory: ${message}`);
+          return { projects: [], activityState: { version: 1, projects: [] } };
+        }),
       ]);
       const leasedProjectSlug = projectActivityState.projects.find((entry) => entry.currentCodingLease !== null)?.slug
         ?? projectActivityState.projects.find((entry) => entry.activityState === "active" && entry.slug !== "evolvo")?.slug
@@ -284,6 +346,9 @@ export function createDiscordControlHandlers(options: {
         activeIssue: options.runtimeState.runtimeStatusIssue,
         currentCycle: options.runtimeState.runtimeStatusCycle,
         cycleLimit: options.runtimeState.runtimeStatusCycleLimit,
+        queueTotals: summarizeQueueTotals(inventory.projects),
+        workers: summarizeWorkers(workerState.workers),
+        limits: getWorkflowLimitConfig(),
       });
       console.log(
         `[status] served runtime status to ${request.requestedBy}: state=${snapshot.runtimeState} mode=${snapshot.workMode} project=${snapshot.activeProject?.slug ?? "none"} issue=${snapshot.activeIssue?.number ?? "none"}`,

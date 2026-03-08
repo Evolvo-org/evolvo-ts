@@ -25,6 +25,7 @@ export async function runRuntimeApp(options: {
     trackerRepo: options.githubRepo,
     defaultProjectContext: services.defaultProjectContext,
     issueManager: services.issueManager,
+    boardsClient: services.projectsClient,
     runtimeState,
   });
   const gracefulShutdownListener = await runRuntimeStartup({

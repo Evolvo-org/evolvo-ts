@@ -1,6 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
 import { applyWorkflowSupervisorActions } from "./workflowSupervisorRuntime.js";
 
+vi.mock("../environment.js", () => ({
+  GITHUB_OWNER: "Evolvo-org",
+  GITHUB_REPO: "evolvo-ts",
+}));
+
 describe("workflowSupervisorRuntime", () => {
   it("applies start, stop, and restart actions using the worker spawner and handle map", async () => {
     const spawnWorker = vi.fn(async ({ spec, restartCount }: { spec: { role: string; projectSlug: string | null }; restartCount: number }) => {
@@ -74,5 +79,32 @@ describe("workflowSupervisorRuntime", () => {
     expect(consoleLogSpy).toHaveBeenCalledWith("[supervisor] started planner.");
     expect(consoleLogSpy).toHaveBeenCalledWith("[supervisor] restarted review (expired-heartbeat).");
     expect(consoleLogSpy).toHaveBeenCalledWith("[supervisor] stopped release (inactive-project).");
+  });
+
+  it("runs reconciliation before planning each supervisor cycle", async () => {
+    const reconcileState = vi.fn().mockResolvedValue(undefined);
+    const runPlanningCycle = vi.fn().mockResolvedValue([]);
+    const stop = vi.fn(async () => {
+      process.emit("SIGTERM");
+    });
+    const spawnWorker = vi.fn().mockResolvedValue({ workerId: "planner", stop });
+
+    const { runWorkflowSupervisorRuntime } = await import("./workflowSupervisorRuntime.js");
+    const runtimePromise = runWorkflowSupervisorRuntime({
+      workDir: "/tmp/evolvo",
+      pollIntervalMs: 1,
+      reconcileState,
+      runPlanningCycle,
+      spawnWorker,
+    });
+
+    setTimeout(() => {
+      process.emit("SIGTERM");
+    }, 5);
+
+    await runtimePromise;
+
+    expect(reconcileState).toHaveBeenCalled();
+    expect(runPlanningCycle).toHaveBeenCalled();
   });
 });

@@ -4,9 +4,7 @@ import type { GitHubProjectsV2Client } from "../../github/githubProjectsV2.js";
 import type { StagedWorkInventory } from "../../issues/stagedWorkInventory.js";
 import type { TaskIssueManager } from "../../issues/taskIssueManager.js";
 import { isWorkerActiveProject } from "./boardQueries.js";
-
-const IDEA_STAGE_TARGET_PER_PROJECT = 5;
-const ISSUE_GENERATOR_MAX_ISSUES_PER_PROJECT = 5;
+import { getWorkflowLimitConfig } from "./workflowLimits.js";
 
 function logIssueGeneratorWorker(projectSlug: string, message: string): void {
   console.log(`[worker][issue-generator][${projectSlug}] ${message}`);
@@ -22,6 +20,7 @@ export async function runIssueGeneratorWorkerPass(options: {
   boardsClient: Pick<GitHubProjectsV2Client, "ensureRepositoryIssueItem" | "moveProjectItemToStage">;
   issueGeneratorAgent?: typeof runIssueGeneratorAgent;
 }): Promise<number> {
+  const limits = getWorkflowLimitConfig();
   let createdCount = 0;
 
   for (const projectInventory of options.inventory.projects) {
@@ -30,13 +29,13 @@ export async function runIssueGeneratorWorkerPass(options: {
     }
 
     const backlogCount = projectInventory.countsByStage.Inbox + projectInventory.countsByStage.Planning;
-    if (backlogCount >= IDEA_STAGE_TARGET_PER_PROJECT) {
+    if (backlogCount >= limits.ideaStageTargetPerProject) {
       continue;
     }
 
     const issuesNeeded = Math.min(
-      ISSUE_GENERATOR_MAX_ISSUES_PER_PROJECT,
-      IDEA_STAGE_TARGET_PER_PROJECT - backlogCount,
+      limits.issueGeneratorMaxIssuesPerProject,
+      limits.ideaStageTargetPerProject - backlogCount,
     );
     if (issuesNeeded <= 0) {
       continue;

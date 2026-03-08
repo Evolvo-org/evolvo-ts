@@ -5,9 +5,7 @@ import type { StagedWorkInventory, StagedWorkItem } from "../../issues/stagedWor
 import type { TaskIssueManager } from "../../issues/taskIssueManager.js";
 import { recordProjectStageTransition } from "../../projects/projectActivityState.js";
 import { isWorkerActiveProject, selectLowestIssueStageItem } from "./boardQueries.js";
-
-const PLANNING_LIMIT_PER_PROJECT = 5;
-const READY_FOR_DEV_LIMIT_PER_PROJECT = 3;
+import { getWorkflowLimitConfig } from "./workflowLimits.js";
 
 function logPlannerWorker(projectSlug: string, message: string): void {
   console.log(`[worker][planner][${projectSlug}] ${message}`);
@@ -52,6 +50,7 @@ export async function runPlannerWorkerPass(options: {
   boardsClient: Pick<GitHubProjectsV2Client, "ensureRepositoryIssueItem" | "moveProjectItemToStage">;
   planningStageAgent?: (input: Parameters<typeof runPlanningStageAgent>[0]) => Promise<PlanningStageAction[]>;
 }): Promise<{ movedToPlanning: number; movedToReadyForDev: number; blocked: number }> {
+  const limits = getWorkflowLimitConfig();
   let movedToPlanning = 0;
   let movedToReadyForDev = 0;
   let blocked = 0;
@@ -61,8 +60,8 @@ export async function runPlannerWorkerPass(options: {
       continue;
     }
 
-    const planningCapacityAvailable = projectInventory.countsByStage.Planning < PLANNING_LIMIT_PER_PROJECT;
-    const readyForDevCapacityAvailable = projectInventory.countsByStage["Ready for Dev"] < READY_FOR_DEV_LIMIT_PER_PROJECT;
+    const planningCapacityAvailable = projectInventory.countsByStage.Planning < limits.planningLimitPerProject;
+    const readyForDevCapacityAvailable = projectInventory.countsByStage["Ready for Dev"] < limits.readyForDevLimitPerProject;
     const nextInboxItem = planningCapacityAvailable
       ? selectLowestIssueStageItem(projectInventory.items, "Inbox")
       : null;

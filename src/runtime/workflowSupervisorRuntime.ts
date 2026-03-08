@@ -1,6 +1,9 @@
 import { spawn, type ChildProcess } from "node:child_process";
+import { GITHUB_OWNER, GITHUB_REPO } from "../environment.js";
 import { removeWorkflowWorkerRecord, readWorkflowWorkerState } from "./workers/workflowWorkerState.js";
 import { buildWorkerId, type WorkerProcessRecord, type WorkerSpec } from "./workers/workerTypes.js";
+import { createRuntimeServices } from "./runtimeServices.js";
+import { reconcileWorkflowSupervisorState } from "./workers/workerRecovery.js";
 import { runWorkflowSupervisorPlanningCycle, type WorkflowSupervisorAction } from "./workflowSupervisor.js";
 
 const DEFAULT_SUPERVISOR_POLL_INTERVAL_MS = 5_000;
@@ -137,6 +140,7 @@ export async function runWorkflowSupervisorRuntime(options: {
   pollIntervalMs?: number;
   runPlanningCycle?: typeof runWorkflowSupervisorPlanningCycle;
   spawnWorker?: WorkflowWorkerSpawner;
+  reconcileState?: (options: { workDir: string; currentWorkers: WorkerProcessRecord[] }) => Promise<void>;
 }): Promise<void> {
   const pollIntervalMs = options.pollIntervalMs ?? parsePositiveIntegerEnv(
     "EVOLVO_SUPERVISOR_POLL_INTERVAL_MS",
@@ -144,6 +148,29 @@ export async function runWorkflowSupervisorRuntime(options: {
   );
   const runPlanningCycle = options.runPlanningCycle ?? runWorkflowSupervisorPlanningCycle;
   const spawnWorker = options.spawnWorker ?? createNodeWorkflowWorkerSpawner();
+  const services = options.reconcileState
+    ? null
+    : createRuntimeServices({
+      githubOwner: GITHUB_OWNER,
+      githubRepo: GITHUB_REPO,
+      workDir: options.workDir,
+    });
+  const reconcileState = options.reconcileState ?? (async ({ workDir, currentWorkers }: {
+    workDir: string;
+    currentWorkers: WorkerProcessRecord[];
+  }) => {
+    if (!services) {
+      return;
+    }
+
+    await reconcileWorkflowSupervisorState({
+      workDir,
+      currentWorkers,
+      defaultProject: services.defaultProjectContext,
+      trackerIssueManager: services.issueManager,
+      boardsClient: services.projectsClient,
+    });
+  });
   const workerHandles = new Map<string, WorkflowWorkerHandle>();
   let stopping = false;
 
@@ -156,14 +183,19 @@ export async function runWorkflowSupervisorRuntime(options: {
 
   try {
     while (!stopping) {
-      const [actions, currentState] = await Promise.all([
+      const currentState = await readWorkflowWorkerState(options.workDir);
+      await reconcileState({
+        workDir: options.workDir,
+        currentWorkers: currentState.workers,
+      });
+      const [actions, reconciledState] = await Promise.all([
         runPlanningCycle({ workDir: options.workDir }),
         readWorkflowWorkerState(options.workDir),
       ]);
       await applyWorkflowSupervisorActions({
         workDir: options.workDir,
         actions,
-        currentWorkers: currentState.workers,
+        currentWorkers: reconciledState.workers,
         workerHandles,
         spawnWorker,
       });

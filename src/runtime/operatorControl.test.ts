@@ -1480,6 +1480,41 @@ describe("operatorControl", () => {
           limit: 10,
           remaining: 6,
         },
+        queueTotals: {
+          Inbox: 1,
+          Planning: 2,
+          "Ready for Dev": 3,
+          "In Dev": 1,
+          "Ready for Review": 0,
+          "In Review": 1,
+          "Ready for Release": 0,
+          Releasing: 0,
+          Blocked: 1,
+          Done: 9,
+        },
+        workers: [
+          {
+            workerId: "planner-1",
+            role: "planner",
+            projectSlug: null,
+            claim: "#17 Planning",
+            restartCount: 1,
+          },
+          {
+            workerId: "dev-habit-cli",
+            role: "dev",
+            projectSlug: "habit-cli",
+            claim: null,
+            restartCount: 0,
+          },
+        ],
+        limits: {
+          ideaStageTargetPerProject: 5,
+          issueGeneratorMaxIssuesPerProject: 5,
+          planningLimitPerProject: 5,
+          readyForDevLimitPerProject: 3,
+          inDevLimitPerProject: 1,
+        },
       },
     });
     const fetchSpy = vi.fn()
@@ -1519,6 +1554,9 @@ describe("operatorControl", () => {
             "Lifecycle: selected -> executing",
             "Deferred stop: current project will stop when complete, then Evolvo will return to self-work.",
             "Cycle: 4 of 10 (6 remaining after this cycle)",
+            "Queues: Inbox 1 | Planning 2 | Ready for Dev 3 | In Dev 1 | Ready for Review 0 | In Review 1 | Ready for Release 0 | Releasing 0 | Blocked 1 | Done 9",
+            "Workers: planner planner-1 (#17 Planning) r1, dev/habit-cli dev-habit-cli (idle)",
+            "Limits: ideaTarget=5 issueGenBatch=5 planning=5 readyForDev=3 inDev=1",
           ].join("\n"),
         }),
       }),
@@ -2068,6 +2106,26 @@ describe("operatorControl", () => {
           limit: 10,
           remaining: 10,
         },
+        queueTotals: {
+          Inbox: 0,
+          Planning: 0,
+          "Ready for Dev": 0,
+          "In Dev": 0,
+          "Ready for Review": 0,
+          "In Review": 0,
+          "Ready for Release": 0,
+          Releasing: 0,
+          Blocked: 0,
+          Done: 0,
+        },
+        workers: [],
+        limits: {
+          ideaStageTargetPerProject: 5,
+          issueGeneratorMaxIssuesPerProject: 5,
+          planningLimitPerProject: 5,
+          readyForDevLimitPerProject: 3,
+          inDevLimitPerProject: 1,
+        },
       },
     });
     const interaction = createSlashInteraction({
@@ -2094,6 +2152,9 @@ describe("operatorControl", () => {
         "Lifecycle: none",
         "Deferred stop: none",
         "Cycle: not started yet (10 total budget available)",
+        "Queues: Inbox 0 | Planning 0 | Ready for Dev 0 | In Dev 0 | Ready for Review 0 | In Review 0 | Ready for Release 0 | Releasing 0 | Blocked 0 | Done 0",
+        "Workers: none registered",
+        "Limits: ideaTarget=5 issueGenBatch=5 planning=5 readyForDev=3 inDev=1",
       ].join("\n"),
     });
     expect(result).toEqual({
@@ -2109,6 +2170,9 @@ describe("operatorControl", () => {
         "Lifecycle: none",
         "Deferred stop: none",
         "Cycle: not started yet (10 total budget available)",
+        "Queues: Inbox 0 | Planning 0 | Ready for Dev 0 | In Dev 0 | Ready for Review 0 | In Review 0 | Ready for Release 0 | Releasing 0 | Blocked 0 | Done 0",
+        "Workers: none registered",
+        "Limits: ideaTarget=5 issueGenBatch=5 planning=5 readyForDev=3 inDev=1",
       ].join("\n"),
     });
   });

@@ -993,6 +993,33 @@ function formatStatusCycleLine(snapshot: RuntimeStatusSnapshot): string {
   return `Cycle: ${snapshot.cycle.current ?? "unknown"} (limit unavailable)`;
 }
 
+function formatStatusQueuesLine(snapshot: RuntimeStatusSnapshot): string {
+  if (snapshot.queueTotals == null) {
+    return "Queues: unavailable";
+  }
+
+  return `Queues: Inbox ${snapshot.queueTotals.Inbox} | Planning ${snapshot.queueTotals.Planning} | Ready for Dev ${snapshot.queueTotals["Ready for Dev"]} | In Dev ${snapshot.queueTotals["In Dev"]} | Ready for Review ${snapshot.queueTotals["Ready for Review"]} | In Review ${snapshot.queueTotals["In Review"]} | Ready for Release ${snapshot.queueTotals["Ready for Release"]} | Releasing ${snapshot.queueTotals.Releasing} | Blocked ${snapshot.queueTotals.Blocked} | Done ${snapshot.queueTotals.Done}`;
+}
+
+function formatStatusWorkersLine(snapshot: RuntimeStatusSnapshot): string {
+  const workers = snapshot.workers ?? [];
+  if (workers.length === 0) {
+    return "Workers: none registered";
+  }
+
+  return `Workers: ${workers
+    .map((worker) => `${worker.role}${worker.projectSlug ? `/${worker.projectSlug}` : ""} ${worker.workerId}${worker.claim ? ` (${worker.claim})` : " (idle)"}${worker.restartCount > 0 ? ` r${worker.restartCount}` : ""}`)
+    .join(", ")}`;
+}
+
+function formatStatusLimitsLine(snapshot: RuntimeStatusSnapshot): string {
+  if (snapshot.limits == null) {
+    return "Limits: unavailable";
+  }
+
+  return `Limits: ideaTarget=${snapshot.limits.ideaStageTargetPerProject} issueGenBatch=${snapshot.limits.issueGeneratorMaxIssuesPerProject} planning=${snapshot.limits.planningLimitPerProject} readyForDev=${snapshot.limits.readyForDevLimitPerProject} inDev=${snapshot.limits.inDevLimitPerProject}`;
+}
+
 function buildStatusAcknowledgementContent(
   operatorUserId: string,
   result: StatusCommandResult,
@@ -1016,6 +1043,9 @@ function buildStatusAcknowledgementContent(
     formatStatusLifecycleLine(snapshot),
     formatStatusDeferredStopLine(snapshot),
     formatStatusCycleLine(snapshot),
+    formatStatusQueuesLine(snapshot),
+    formatStatusWorkersLine(snapshot),
+    formatStatusLimitsLine(snapshot),
   ].join("\n");
 }
 
