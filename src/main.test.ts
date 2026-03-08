@@ -1266,6 +1266,10 @@ describe("main", () => {
 
     await main();
 
+    expect(runPlannerAgentMock).toHaveBeenCalledWith(expect.objectContaining({
+      openIssueCount: 0,
+      workDir: "/home/paddy/habit-cli",
+    }));
     expect(clearActiveProjectStateMock).toHaveBeenCalledWith("/tmp/evolvo");
     expect(notifyDeferredProjectStopTriggeredInDiscordMock).toHaveBeenCalledWith({
       displayName: "Habit CLI",
@@ -1278,6 +1282,151 @@ describe("main", () => {
       "[stopProject] switched from project Habit CLI (habit-cli) back to Evolvo self-work. Runtime remains online.",
     );
     expect(runCodingAgentMock).toHaveBeenCalledWith("Issue #30: Self issue after project completion\n\nself work");
+  });
+
+  it("keeps a deferred project active when project planner replenishment creates more work", async () => {
+    readActiveProjectStateMock.mockResolvedValueOnce({
+      version: 2,
+      activeProjectSlug: "habit-cli",
+      selectionState: "active",
+      deferredStopMode: "when-project-complete",
+      updatedAt: "2026-03-08T10:10:00.000Z",
+      requestedBy: "discord:operator-1",
+      source: "stop-project-command",
+    });
+    replenishSelfImprovementIssuesMock.mockResolvedValueOnce({
+      created: [
+        {
+          number: 31,
+          title: "Generated project follow-up",
+          description: "project work",
+          state: "open",
+          labels: [],
+        },
+      ],
+    });
+    buildUnifiedIssueQueueMock
+      .mockResolvedValueOnce({
+        issues: [
+          {
+            number: 30,
+            title: "Self issue after project queue drained",
+            description: "self work",
+            state: "open",
+            labels: [],
+            queueKey: "tracker:owner/repo#30",
+            sourceKind: "tracker",
+            projectSlug: null,
+            repository: {
+              owner: "owner",
+              repo: "repo",
+              url: "https://github.com/owner/repo",
+              reference: "owner/repo",
+            },
+            project: null,
+          },
+        ],
+        unauthorizedClosures: [],
+        activeManagedProject: {
+          ...DEFAULT_PROJECT_EXECUTION_CONTEXT.project,
+          slug: "habit-cli",
+          displayName: "Habit CLI",
+          kind: "managed",
+          issueLabel: "project:habit-cli",
+          executionRepo: {
+            owner: "owner",
+            repo: "habit-cli",
+            url: "https://github.com/owner/habit-cli",
+            defaultBranch: "main",
+          },
+          cwd: "/home/paddy/habit-cli",
+        },
+      })
+      .mockResolvedValueOnce({
+        issues: [
+          {
+            number: 31,
+            title: "Generated project follow-up",
+            description: "project work",
+            state: "open",
+            labels: [],
+            queueKey: "project:habit-cli#31",
+            sourceKind: "project-repo",
+            projectSlug: "habit-cli",
+            repository: {
+              owner: "owner",
+              repo: "habit-cli",
+              url: "https://github.com/owner/habit-cli",
+              reference: "owner/habit-cli",
+            },
+            project: {
+              ...DEFAULT_PROJECT_EXECUTION_CONTEXT.project,
+              slug: "habit-cli",
+              displayName: "Habit CLI",
+              kind: "managed",
+              issueLabel: "project:habit-cli",
+              executionRepo: {
+                owner: "owner",
+                repo: "habit-cli",
+                url: "https://github.com/owner/habit-cli",
+                defaultBranch: "main",
+              },
+              cwd: "/home/paddy/habit-cli",
+            },
+          },
+        ],
+        unauthorizedClosures: [],
+        activeManagedProject: {
+          ...DEFAULT_PROJECT_EXECUTION_CONTEXT.project,
+          slug: "habit-cli",
+          displayName: "Habit CLI",
+          kind: "managed",
+          issueLabel: "project:habit-cli",
+          executionRepo: {
+            owner: "owner",
+            repo: "habit-cli",
+            url: "https://github.com/owner/habit-cli",
+            defaultBranch: "main",
+          },
+          cwd: "/home/paddy/habit-cli",
+        },
+      })
+      .mockResolvedValueOnce({
+        issues: [],
+        unauthorizedClosures: [],
+        activeManagedProject: {
+          ...DEFAULT_PROJECT_EXECUTION_CONTEXT.project,
+          slug: "habit-cli",
+          displayName: "Habit CLI",
+          kind: "managed",
+          issueLabel: "project:habit-cli",
+          executionRepo: {
+            owner: "owner",
+            repo: "habit-cli",
+            url: "https://github.com/owner/habit-cli",
+            defaultBranch: "main",
+          },
+          cwd: "/home/paddy/habit-cli",
+        },
+      });
+
+    const { main } = await import("./main.js");
+
+    await main();
+
+    expect(runPlannerAgentMock).toHaveBeenCalledWith(expect.objectContaining({
+      openIssueCount: 0,
+      workDir: "/home/paddy/habit-cli",
+    }));
+    expect(markInProgressMock).toHaveBeenCalledWith(31);
+    expect(runCodingAgentMock).toHaveBeenCalledWith(
+      expect.stringContaining("Issue #31: Generated project follow-up\n\nproject work"),
+    );
+    expect(clearActiveProjectStateMock).toHaveBeenCalledWith("/tmp/evolvo");
+    expect(notifyDeferredProjectStopTriggeredInDiscordMock).toHaveBeenCalledWith({
+      displayName: "Habit CLI",
+      slug: "habit-cli",
+    });
   });
 
   it("keeps the runtime online and idle when the active project is stopped", async () => {

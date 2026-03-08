@@ -588,6 +588,56 @@ export async function main(): Promise<void> {
               issueTargetsProject(issue, activeProjectState.activeProjectSlug ?? "")
             );
             if (activeProjectSelectionCandidates.length === 0) {
+              if (unifiedQueue.activeManagedProject !== null) {
+                if (
+                  await stopIfGracefulShutdownPreventsNewWork(
+                    WORK_DIR,
+                    "Stopping before planner replenishment.",
+                    discordHandlers,
+                  )
+                ) {
+                  return;
+                }
+
+                const plannerResult = await runPlannerAgent({
+                  cycle,
+                  openIssueCount: activeProjectSelectionCandidates.length,
+                  minimumIssueCount: MIN_REPLENISH_ISSUES,
+                  maximumOpenIssues: MAX_OPEN_ISSUES,
+                  issueManager: issueManager.forRepository({
+                    owner: unifiedQueue.activeManagedProject.executionRepo.owner,
+                    repo: unifiedQueue.activeManagedProject.executionRepo.repo,
+                  }),
+                  workDir: unifiedQueue.activeManagedProject.cwd,
+                });
+                const createdIssues = plannerResult.created;
+                logCycleQueueHealth({
+                  cycle,
+                  openCount: openIssues.length,
+                  selectedIssue: null,
+                  queueAction: {
+                    type: plannerResult.startupBootstrap ? "bootstrap" : "replenish",
+                    createdCount: createdIssues.length,
+                    outcome: createdIssues.length > 0 ? "continue" : "stop",
+                  },
+                });
+
+                if (createdIssues.length > 0) {
+                  if (
+                    await stopIfGracefulShutdownPreventsNewWork(
+                      WORK_DIR,
+                      "Stopping before starting a new task.",
+                      discordHandlers,
+                    )
+                  ) {
+                    return;
+                  }
+
+                  logCreatedIssues(createdIssues);
+                  continue issueCycleLoop;
+                }
+              }
+
               const completedProject = unifiedQueue.activeManagedProject ?? {
                 slug: activeProjectState.activeProjectSlug,
                 displayName: activeProjectState.activeProjectSlug,
