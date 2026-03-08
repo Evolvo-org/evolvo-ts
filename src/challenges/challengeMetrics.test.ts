@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -260,5 +260,40 @@ describe("challengeMetrics", () => {
     expect(warnSpy).toHaveBeenCalledWith(
       `Recovered invalid challenge metrics store at ${statePath}; preserved corrupt file at ${corruptPath}.`,
     );
+  });
+
+  it("ignores interrupted temp files when persisting challenge metrics", async () => {
+    const workDir = await createTempWorkDir();
+    tempDirs.push(workDir);
+    const evolvoDir = join(workDir, ".evolvo");
+    await mkdir(evolvoDir, { recursive: true });
+    await writeFile(join(evolvoDir, "challenge-metrics.tmp-interrupted.json"), "{\"total\":", "utf8");
+
+    const metrics = await recordChallengeAttemptMetrics(workDir, {
+      challengeIssueNumber: 55,
+      success: false,
+      failureCategory: "validation_failure",
+    });
+
+    expect(metrics).toEqual({
+      total: 1,
+      success: 0,
+      failure: 1,
+      attemptsToSuccess: {
+        total: 0,
+        samples: 0,
+        average: 0,
+      },
+      categoryCounts: {
+        validation_failure: 1,
+      },
+      pendingAttemptsByChallenge: {
+        55: 1,
+      },
+    });
+    expect((await readdir(evolvoDir)).sort()).toEqual([
+      "challenge-metrics.json",
+      "challenge-metrics.tmp-interrupted.json",
+    ]);
   });
 });

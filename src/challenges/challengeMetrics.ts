@@ -1,8 +1,8 @@
-import { promises as fs } from "node:fs";
 import { join } from "node:path";
 import {
   readRecoverableJsonState,
   type RecoverableJsonStateNormalizationResult,
+  writeAtomicJsonState,
 } from "../runtime/localStateFile.js";
 
 const EVOLVO_DIRECTORY_NAME = ".evolvo";
@@ -171,8 +171,7 @@ export async function readChallengeMetrics(workDir: string): Promise<ChallengeMe
 
 export async function writeChallengeMetrics(workDir: string, metrics: ChallengeMetrics): Promise<void> {
   const metricsPath = getMetricsPath(workDir);
-  await fs.mkdir(join(workDir, EVOLVO_DIRECTORY_NAME), { recursive: true });
-  await fs.writeFile(metricsPath, `${JSON.stringify(normalizeMetricsShape(metrics).state, null, 2)}\n`, "utf8");
+  await writeAtomicJsonState(metricsPath, normalizeMetricsShape(metrics).state);
 }
 
 export async function recordChallengeAttemptMetrics(
