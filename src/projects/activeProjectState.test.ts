@@ -62,6 +62,52 @@ describe("activeProjectState", () => {
     await expect(readActiveProjectState(workDir)).resolves.toEqual(state);
   });
 
+  it("rejects blank slugs before writing active project state", async () => {
+    const workDir = await createTempWorkDir();
+    tempDirs.push(workDir);
+
+    await expect(
+      setActiveProjectState({
+        workDir,
+        slug: "   ",
+        requestedBy: "discord:operator-1",
+        source: "start-project-command",
+        updatedAt: "2026-03-08T12:00:00.000Z",
+      }),
+    ).rejects.toThrow("Active project state slug cannot be empty.");
+    await expect(readActiveProjectState(workDir)).resolves.toEqual({
+      version: 2,
+      activeProjectSlug: null,
+      selectionState: null,
+      updatedAt: null,
+      requestedBy: null,
+      source: null,
+    });
+  });
+
+  it("rejects blank operator identities before writing active project state", async () => {
+    const workDir = await createTempWorkDir();
+    tempDirs.push(workDir);
+
+    await expect(
+      setActiveProjectState({
+        workDir,
+        slug: "habit-cli",
+        requestedBy: "   ",
+        source: "start-project-command",
+        updatedAt: "2026-03-08T12:00:00.000Z",
+      }),
+    ).rejects.toThrow("Active project state requestedBy cannot be empty.");
+    await expect(readActiveProjectState(workDir)).resolves.toEqual({
+      version: 2,
+      activeProjectSlug: null,
+      selectionState: null,
+      updatedAt: null,
+      requestedBy: null,
+      source: null,
+    });
+  });
+
   it("migrates version-1 active project state into the current shape without warning", async () => {
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
     const workDir = await createTempWorkDir();
@@ -176,6 +222,34 @@ describe("activeProjectState", () => {
         requestedBy: "discord:operator-1",
         source: "stop-project-command",
       },
+    });
+  });
+
+  it("rejects blank stop operators before overwriting active project state", async () => {
+    const workDir = await createTempWorkDir();
+    tempDirs.push(workDir);
+    await setActiveProjectState({
+      workDir,
+      slug: "habit-cli",
+      requestedBy: "discord:operator-1",
+      source: "start-project-command",
+      updatedAt: "2026-03-08T12:20:00.000Z",
+    });
+
+    await expect(
+      stopActiveProjectState({
+        workDir,
+        requestedBy: "   ",
+        updatedAt: "2026-03-08T12:25:00.000Z",
+      }),
+    ).rejects.toThrow("Active project state requestedBy cannot be empty.");
+    await expect(readActiveProjectState(workDir)).resolves.toEqual({
+      version: 2,
+      activeProjectSlug: "habit-cli",
+      selectionState: "active",
+      updatedAt: "2026-03-08T12:20:00.000Z",
+      requestedBy: "discord:operator-1",
+      source: "start-project-command",
     });
   });
 
