@@ -9,6 +9,8 @@ const ACTIVE_PROJECT_STATE_FILE_NAME = "active-project.json";
 const ACTIVE_PROJECT_STATE_VERSION = 2;
 
 export type ActiveProjectSelectionState = "active" | "stopped";
+export type ActiveProjectDeferredStopMode = "when-project-complete";
+export type StopActiveProjectMode = "now" | ActiveProjectDeferredStopMode;
 
 export type ActiveProjectStateSource =
   | "start-project-command"
@@ -19,6 +21,7 @@ export type ActiveProjectState = {
   version: typeof ACTIVE_PROJECT_STATE_VERSION;
   activeProjectSlug: string | null;
   selectionState: ActiveProjectSelectionState | null;
+  deferredStopMode?: ActiveProjectDeferredStopMode | null;
   updatedAt: string | null;
   requestedBy: string | null;
   source: ActiveProjectStateSource | null;
@@ -62,11 +65,20 @@ function normalizeSelectionState(value: unknown): ActiveProjectSelectionState | 
   return null;
 }
 
+function normalizeDeferredStopMode(value: unknown): ActiveProjectDeferredStopMode | null {
+  if (value === "when-project-complete") {
+    return value;
+  }
+
+  return null;
+}
+
 function createDefaultActiveProjectState(): ActiveProjectState {
   return {
     version: ACTIVE_PROJECT_STATE_VERSION,
     activeProjectSlug: null,
     selectionState: null,
+    deferredStopMode: null,
     updatedAt: null,
     requestedBy: null,
     source: null,
@@ -85,6 +97,7 @@ function normalizeActiveProjectState(raw: unknown): RecoverableJsonStateNormaliz
   const rawVersion = (raw as { version?: unknown }).version;
   const activeProjectSlug = normalizeNonEmptyString(candidate.activeProjectSlug);
   const selectionState = normalizeSelectionState(candidate.selectionState);
+  const deferredStopMode = normalizeDeferredStopMode(candidate.deferredStopMode);
   const updatedAt = normalizeNonEmptyString(candidate.updatedAt);
   const requestedBy = normalizeNonEmptyString(candidate.requestedBy);
   const source = normalizeSource(candidate.source);
@@ -97,7 +110,10 @@ function normalizeActiveProjectState(raw: unknown): RecoverableJsonStateNormaliz
     version === null ||
     ("activeProjectSlug" in candidate && candidate.activeProjectSlug !== null && activeProjectSlug === null) ||
     ("selectionState" in candidate && candidate.selectionState !== null && selectionState === null) ||
+    ("deferredStopMode" in candidate && candidate.deferredStopMode !== null && deferredStopMode === null) ||
     (activeProjectSlug === null && normalizedSelectionState !== null) ||
+    (activeProjectSlug === null && deferredStopMode !== null) ||
+    (normalizedSelectionState !== "active" && deferredStopMode !== null) ||
     ("updatedAt" in candidate && candidate.updatedAt !== null && updatedAt === null) ||
     ("requestedBy" in candidate && candidate.requestedBy !== null && requestedBy === null) ||
     ("source" in candidate && candidate.source !== null && source === null)
@@ -113,6 +129,7 @@ function normalizeActiveProjectState(raw: unknown): RecoverableJsonStateNormaliz
       version: ACTIVE_PROJECT_STATE_VERSION,
       activeProjectSlug,
       selectionState: normalizedSelectionState,
+      deferredStopMode,
       updatedAt,
       requestedBy,
       source,
@@ -156,6 +173,7 @@ export async function setActiveProjectState(options: {
     version: ACTIVE_PROJECT_STATE_VERSION,
     activeProjectSlug,
     selectionState: "active",
+    deferredStopMode: null,
     updatedAt: options.updatedAt?.trim() || new Date().toISOString(),
     requestedBy,
     source: options.source,
@@ -165,9 +183,15 @@ export async function setActiveProjectState(options: {
 export async function stopActiveProjectState(options: {
   workDir: string;
   requestedBy: string;
+  mode?: StopActiveProjectMode;
   updatedAt?: string;
 }): Promise<{
-  status: "stopped" | "already-stopped" | "no-active-project";
+  status:
+    | "stopped"
+    | "stop-when-complete-scheduled"
+    | "already-stop-when-complete-scheduled"
+    | "already-stopped"
+    | "no-active-project";
   state: ActiveProjectState;
 }> {
   const currentState = await readActiveProjectState(options.workDir);
@@ -178,6 +202,7 @@ export async function stopActiveProjectState(options: {
     };
   }
 
+  const mode = options.mode ?? "now";
   if (currentState.selectionState === "stopped") {
     return {
       status: "already-stopped",
@@ -186,10 +211,35 @@ export async function stopActiveProjectState(options: {
   }
 
   const requestedBy = requireNonEmptyInput(options.requestedBy, "requestedBy");
+  if (mode === "when-project-complete") {
+    if (currentState.deferredStopMode === "when-project-complete") {
+      return {
+        status: "already-stop-when-complete-scheduled",
+        state: currentState,
+      };
+    }
+
+    const nextState: ActiveProjectState = {
+      version: ACTIVE_PROJECT_STATE_VERSION,
+      activeProjectSlug: currentState.activeProjectSlug,
+      selectionState: "active",
+      deferredStopMode: "when-project-complete",
+      updatedAt: options.updatedAt?.trim() || new Date().toISOString(),
+      requestedBy,
+      source: "stop-project-command",
+    };
+    await writeActiveProjectState(options.workDir, nextState);
+    return {
+      status: "stop-when-complete-scheduled",
+      state: nextState,
+    };
+  }
+
   const nextState: ActiveProjectState = {
     version: ACTIVE_PROJECT_STATE_VERSION,
     activeProjectSlug: currentState.activeProjectSlug,
     selectionState: "stopped",
+    deferredStopMode: null,
     updatedAt: options.updatedAt?.trim() || new Date().toISOString(),
     requestedBy,
     source: "stop-project-command",
@@ -199,4 +249,10 @@ export async function stopActiveProjectState(options: {
     status: "stopped",
     state: nextState,
   };
+}
+
+export async function clearActiveProjectState(workDir: string): Promise<ActiveProjectState> {
+  const nextState = createDefaultActiveProjectState();
+  await writeActiveProjectState(workDir, nextState);
+  return nextState;
 }

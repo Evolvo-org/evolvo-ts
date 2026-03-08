@@ -40,6 +40,7 @@ import {
 } from "./runtime/gracefulShutdown.js";
 import {
   notifyCycleLimitDecisionAppliedInDiscord,
+  notifyDeferredProjectStopTriggeredInDiscord,
   type StopProjectCommandResult,
   notifyIssueStartedInDiscord,
   notifyRuntimeQuittingInDiscord,
@@ -77,13 +78,15 @@ import {
   handleStartProjectCommand,
   isProjectProvisioningRequestIssue,
 } from "./projects/projectProvisioning.js";
-import { readActiveProjectState, stopActiveProjectState } from "./projects/activeProjectState.js";
+import { parseProjectProvisioningIssueMetadata } from "./issues/projectProvisioningIssue.js";
+import { clearActiveProjectState, readActiveProjectState, stopActiveProjectState } from "./projects/activeProjectState.js";
 import {
   PROJECT_ROUTING_BLOCKED_LABEL,
   buildProjectRoutingBlockedComment,
   buildProjectExecutionContext,
   resolveProjectExecutionContextForIssue,
 } from "./projects/projectExecutionContext.js";
+import { PROJECT_LABEL_PREFIX } from "./projects/projectNaming.js";
 import {
   ProjectRepositoryIssueInspector,
   buildProjectRepositoryIssueInspectionLogLines,
@@ -258,11 +261,37 @@ function buildStopProjectResultLog(result: StopProjectCommandResult): string {
     return `[stopProject] halted project ${result.project?.displayName ?? result.project?.slug ?? "unknown"}. Runtime remains online.`;
   }
 
+  if (result.action === "stop-when-complete-scheduled") {
+    return `[stopProject] project ${result.project?.displayName ?? result.project?.slug ?? "unknown"} will stop automatically when it runs out of actionable work. Evolvo will then return to self-work.`;
+  }
+
+  if (result.action === "already-stop-when-complete-scheduled") {
+    return `[stopProject] project ${result.project?.displayName ?? result.project?.slug ?? "unknown"} is already scheduled to stop when complete. Evolvo will return to self-work afterward.`;
+  }
+
   if (result.action === "already-stopped") {
     return `[stopProject] project ${result.project?.displayName ?? result.project?.slug ?? "unknown"} was already halted. Runtime remains online.`;
   }
 
   return "[stopProject] no active project was selected. Runtime remains online.";
+}
+
+function issueTargetsProject(issue: UnifiedIssue, projectSlug: string): boolean {
+  const normalizedProjectSlug = projectSlug.trim().toLowerCase();
+  if (!normalizedProjectSlug) {
+    return false;
+  }
+
+  if (issue.projectSlug?.trim().toLowerCase() === normalizedProjectSlug) {
+    return true;
+  }
+
+  const provisioningSlug = parseProjectProvisioningIssueMetadata(issue.description)?.slug?.trim().toLowerCase();
+  if (provisioningSlug === normalizedProjectSlug) {
+    return true;
+  }
+
+  return issue.labels.some((label) => label.trim().toLowerCase() === `${PROJECT_LABEL_PREFIX}${normalizedProjectSlug}`);
 }
 
 async function readPendingGracefulShutdownRequest(
@@ -370,6 +399,7 @@ export async function main(): Promise<void> {
       const stopResult = await stopActiveProjectState({
         workDir: WORK_DIR,
         requestedBy: request.requestedBy,
+        mode: request.mode,
         updatedAt: request.requestedAt,
       });
       activeProjectState = stopResult.state;
@@ -396,6 +426,34 @@ export async function main(): Promise<void> {
             }
             : {}),
         }
+        : stopResult.status === "stop-when-complete-scheduled"
+          ? {
+            ok: true,
+            action: "stop-when-complete-scheduled",
+            message: `Project \`${projectRecord?.slug ?? stopResult.state.activeProjectSlug ?? "unknown"}\` will keep running until it has no actionable issues left. Evolvo will then stop it automatically, return to self-work, and remain online.`,
+            ...(projectRecord
+              ? {
+                project: {
+                  displayName: projectRecord.displayName,
+                  slug: projectRecord.slug,
+                },
+              }
+              : {}),
+          }
+          : stopResult.status === "already-stop-when-complete-scheduled"
+            ? {
+              ok: true,
+              action: "already-stop-when-complete-scheduled",
+              message: `Project \`${projectRecord?.slug ?? stopResult.state.activeProjectSlug ?? "unknown"}\` is already scheduled to stop when it runs out of actionable work. Evolvo will return to self-work afterward.`,
+              ...(projectRecord
+                ? {
+                  project: {
+                    displayName: projectRecord.displayName,
+                    slug: projectRecord.slug,
+                  },
+                }
+                : {}),
+            }
         : stopResult.status === "already-stopped"
           ? {
             ok: true,
@@ -519,6 +577,86 @@ export async function main(): Promise<void> {
           const selectionCandidates = [...projectActionableIssues, ...retryEligibleIssues as UnifiedIssue[]];
           if (await stopIfSingleTaskGracefulShutdownRequested(WORK_DIR, "Stopping before starting a new task.", discordHandlers)) {
             return;
+          }
+
+          if (
+            activeProjectState.selectionState === "active"
+            && activeProjectState.activeProjectSlug !== null
+            && activeProjectState.deferredStopMode === "when-project-complete"
+          ) {
+            const activeProjectSelectionCandidates = selectionCandidates.filter((issue) =>
+              issueTargetsProject(issue, activeProjectState.activeProjectSlug ?? "")
+            );
+            if (activeProjectSelectionCandidates.length === 0) {
+              if (unifiedQueue.activeManagedProject !== null) {
+                if (
+                  await stopIfGracefulShutdownPreventsNewWork(
+                    WORK_DIR,
+                    "Stopping before planner replenishment.",
+                    discordHandlers,
+                  )
+                ) {
+                  return;
+                }
+
+                const plannerResult = await runPlannerAgent({
+                  cycle,
+                  openIssueCount: activeProjectSelectionCandidates.length,
+                  minimumIssueCount: MIN_REPLENISH_ISSUES,
+                  maximumOpenIssues: MAX_OPEN_ISSUES,
+                  issueManager: issueManager.forRepository({
+                    owner: unifiedQueue.activeManagedProject.executionRepo.owner,
+                    repo: unifiedQueue.activeManagedProject.executionRepo.repo,
+                  }),
+                  workDir: unifiedQueue.activeManagedProject.cwd,
+                });
+                const createdIssues = plannerResult.created;
+                logCycleQueueHealth({
+                  cycle,
+                  openCount: openIssues.length,
+                  selectedIssue: null,
+                  queueAction: {
+                    type: plannerResult.startupBootstrap ? "bootstrap" : "replenish",
+                    createdCount: createdIssues.length,
+                    outcome: createdIssues.length > 0 ? "continue" : "stop",
+                  },
+                });
+
+                if (createdIssues.length > 0) {
+                  if (
+                    await stopIfGracefulShutdownPreventsNewWork(
+                      WORK_DIR,
+                      "Stopping before starting a new task.",
+                      discordHandlers,
+                    )
+                  ) {
+                    return;
+                  }
+
+                  logCreatedIssues(createdIssues);
+                  continue issueCycleLoop;
+                }
+              }
+
+              const completedProject = unifiedQueue.activeManagedProject ?? {
+                slug: activeProjectState.activeProjectSlug,
+                displayName: activeProjectState.activeProjectSlug,
+              };
+              console.log(
+                `[stopProject] project ${completedProject.slug} reached completion with deferred stop active. No actionable project work remains.`,
+              );
+              activeProjectState = await clearActiveProjectState(WORK_DIR);
+              stoppedProjectIdleLoggedSlug = null;
+              console.log(
+                `[stopProject] switched from project ${completedProject.displayName} (${completedProject.slug}) back to Evolvo self-work. Runtime remains online.`,
+              );
+              await notifyDeferredProjectStopTriggeredInDiscord({
+                displayName: completedProject.displayName,
+                slug: completedProject.slug,
+              });
+              cycle -= 1;
+              continue issueCycleLoop;
+            }
           }
 
           const selectionDecision = await selectIssueForWorkWithOpenAi({

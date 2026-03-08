@@ -50,6 +50,7 @@ export type StopProjectCommandRequest = {
   messageId: string;
   requestedAt: string;
   requestedBy: string;
+  mode: "now" | "when-project-complete";
 };
 
 export type StartProjectCommandResult =
@@ -96,7 +97,12 @@ export type StartProjectCommandResult =
 export type StopProjectCommandResult =
   | {
     ok: true;
-    action: "stopped" | "already-stopped" | "no-active-project";
+    action:
+      | "stopped"
+      | "stop-when-complete-scheduled"
+      | "already-stop-when-complete-scheduled"
+      | "already-stopped"
+      | "no-active-project";
     message: string;
     project?: {
       displayName: string;
@@ -132,6 +138,7 @@ type DiscordOperatorStep =
   | "read-control-commands"
   | "send-quit-ack"
   | "send-stop-project-ack"
+  | "send-project-return-ack"
   | "send-start-project-ack"
   | "send-cycle-decision-ack"
   | "send-quit-message";
@@ -285,6 +292,30 @@ function parseStopProjectCommand(content: string): string | null {
   }
 
   return match[1]?.trim() ?? "";
+}
+
+function parseStopProjectModeFromSuffix(
+  suffix: string,
+): { ok: true; mode: "now" | "when-project-complete" } | { ok: false; message: string } {
+  if (suffix.length === 0) {
+    return {
+      ok: true,
+      mode: "now",
+    };
+  }
+
+  const normalized = suffix.replace(/\s+/g, "").toLowerCase();
+  if (normalized === "whenprojectcomplete") {
+    return {
+      ok: true,
+      mode: "when-project-complete",
+    };
+  }
+
+  return {
+    ok: false,
+    message: "`stopProject` only accepts `whenProjectComplete` as an optional argument.",
+  };
 }
 
 function buildAuthHeaders(config: DiscordControlConfig): Record<string, string> {
@@ -519,8 +550,8 @@ function buildStartupBootMessageContent(): string {
   return [
     "🤖 Evolvo runtime booted.",
     "Operator control is online in plain-text mode, and the live bot session will register slash commands when it connects.",
-    "Slash commands: `/quit`, `/startproject`, `/stopproject`.",
-    "Plain-text fallback: `quit after current task`, `quit after tasks`, `startProject <project-name>`, `stopProject`.",
+    "Slash commands: `/quit`, `/startproject`, `/stopproject mode:now|when-project-complete`.",
+    "Plain-text fallback: `quit after current task`, `quit after tasks`, `startProject <project-name>`, `stopProject`, `stopProject whenProjectComplete`.",
     "When Evolvo posts a cycle-limit prompt, reply with `continue` or `quit`.",
     `Started at: ${startedAt}`,
   ].join("\n");
@@ -686,29 +717,51 @@ function buildStopProjectAcknowledgementContent(
   operatorUserId: string,
   result: StopProjectCommandResult,
 ): string {
-  return !result.ok
-    ? [
+  if (!result.ok) {
+    return [
       `<@${operatorUserId}> Could not stop the current project.`,
       result.message,
-      "Usage: `stopProject`",
-    ].join("\n")
-    : result.action === "stopped"
-      ? [
-        `<@${operatorUserId}> Stopped current project \`${result.project?.displayName ?? result.project?.slug ?? "unknown"}\`.`,
-        result.message,
-        "Runtime remains online and is waiting for further operator commands.",
-      ].join("\n")
-      : result.action === "already-stopped"
-        ? [
-          `<@${operatorUserId}> Project \`${result.project?.displayName ?? result.project?.slug ?? "unknown"}\` is already stopped.`,
-          result.message,
-          "Runtime remains online and is waiting for further operator commands.",
-        ].join("\n")
-        : [
-          `<@${operatorUserId}> No active project is currently selected.`,
-          result.message,
-          "Runtime remains online and is waiting for further operator commands.",
-        ].join("\n");
+      "Usage: `stopProject` or `stopProject whenProjectComplete`",
+    ].join("\n");
+  }
+
+  if (result.action === "stopped") {
+    return [
+      `<@${operatorUserId}> Stopped current project \`${result.project?.displayName ?? result.project?.slug ?? "unknown"}\`.`,
+      result.message,
+      "Runtime remains online and is waiting for further operator commands.",
+    ].join("\n");
+  }
+
+  if (result.action === "stop-when-complete-scheduled") {
+    return [
+      `<@${operatorUserId}> Current project \`${result.project?.displayName ?? result.project?.slug ?? "unknown"}\` will stop when complete.`,
+      result.message,
+      "Evolvo will return to self-work afterward and remain online for further operator commands.",
+    ].join("\n");
+  }
+
+  if (result.action === "already-stop-when-complete-scheduled") {
+    return [
+      `<@${operatorUserId}> Project \`${result.project?.displayName ?? result.project?.slug ?? "unknown"}\` is already set to stop when complete.`,
+      result.message,
+      "Evolvo will return to self-work afterward and remain online for further operator commands.",
+    ].join("\n");
+  }
+
+  if (result.action === "already-stopped") {
+    return [
+      `<@${operatorUserId}> Project \`${result.project?.displayName ?? result.project?.slug ?? "unknown"}\` is already stopped.`,
+      result.message,
+      "Runtime remains online and is waiting for further operator commands.",
+    ].join("\n");
+  }
+
+  return [
+    `<@${operatorUserId}> No active project is currently selected.`,
+    result.message,
+    "Runtime remains online and is waiting for further operator commands.",
+  ].join("\n");
 }
 
 async function sendStopProjectAcknowledgement(
@@ -721,6 +774,33 @@ async function sendStopProjectAcknowledgement(
       content: buildStopProjectAcknowledgementContent(config.operatorUserId, result),
     }),
   });
+}
+
+export async function notifyDeferredProjectStopTriggeredInDiscord(project: {
+  displayName: string;
+  slug: string;
+}): Promise<void> {
+  const config = getDiscordControlConfigFromEnv();
+  if (!config) {
+    return;
+  }
+
+  const content = [
+    `<@${config.operatorUserId}> Project \`${project.displayName}\` is complete, so the deferred stop has now been applied.`,
+    `Project \`${project.slug}\` has been cleared as the active focus.`,
+    "Evolvo has returned to self-work, remains online, and can receive further operator commands.",
+  ].join("\n");
+
+  try {
+    await fetchDiscordJson<{ id: string }>(config, `/channels/${config.controlChannelId}/messages`, {
+      method: "POST",
+      body: JSON.stringify({ content }),
+    });
+  } catch (error) {
+    const sendMessage = buildStepFailureMessage("send-project-return-ack", error);
+    console.error(`Discord deferred project stop notification failed: ${sendMessage}`);
+    logDiscordMissingAccessHint(sendMessage);
+  }
 }
 
 async function sendCycleLimitDecisionConfirmation(
@@ -798,6 +878,24 @@ function buildDiscordSlashCommandDefinitions(): RESTPostAPIChatInputApplicationC
     {
       name: DISCORD_SLASH_COMMAND_NAMES.stopProject,
       description: "Stop the currently active project",
+      options: [
+        {
+          type: ApplicationCommandOptionType.String,
+          name: "mode",
+          description: "Whether to stop immediately or when the project is complete",
+          required: false,
+          choices: [
+            {
+              name: "Now",
+              value: "now",
+            },
+            {
+              name: "When project complete",
+              value: "when-project-complete",
+            },
+          ],
+        },
+      ],
     },
   ];
 }
@@ -922,6 +1020,7 @@ async function processStopProjectControlCommand(
   workDir: string,
   messageId: string,
   requestedBy: string,
+  mode: "now" | "when-project-complete",
   handlers: DiscordControlHandlers,
 ): Promise<{ result: StopProjectCommandResult; duplicate: boolean }> {
   const recordedReceipt = await recordDiscordControlCommandReceipt(workDir, {
@@ -950,6 +1049,7 @@ async function processStopProjectControlCommand(
         messageId,
         requestedAt: new Date().toISOString(),
         requestedBy,
+        mode,
       }),
     };
   } catch (error) {
@@ -1040,10 +1140,12 @@ export async function handleDiscordSlashCommandInteraction(
     };
   }
 
+  const stopProjectMode = interaction.options.getString("mode") as "now" | "when-project-complete" | null;
   const processed = await processStopProjectControlCommand(
     workDir,
     interaction.id,
     `discord:${interaction.user.id}`,
+    stopProjectMode ?? "now",
     handlers,
   );
   const replyContent = processed.duplicate
@@ -1280,18 +1382,20 @@ export async function pollDiscordGracefulShutdownCommand(
 
       const stopProjectCommandSuffix = parseStopProjectCommand(message.content);
       if (stopProjectCommandSuffix !== null && handlers.onStopProject) {
-        const processed = stopProjectCommandSuffix.length > 0
+        const parsedStopMode = parseStopProjectModeFromSuffix(stopProjectCommandSuffix);
+        const processed = !parsedStopMode.ok
           ? {
             duplicate: false,
             result: {
               ok: false,
-              message: "`stopProject` does not take any arguments.",
+              message: parsedStopMode.message,
             } satisfies StopProjectCommandResult,
           }
           : await processStopProjectControlCommand(
             workDir,
             message.id,
             `discord:${config.operatorUserId}`,
+            parsedStopMode.mode,
             handlers,
           );
         if (!processed.duplicate) {

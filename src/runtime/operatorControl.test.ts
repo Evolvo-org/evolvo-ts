@@ -1221,6 +1221,7 @@ describe("operatorControl", () => {
       messageId: "7161",
       requestedAt: expect.any(String),
       requestedBy: "discord:operator-1",
+      mode: "now",
     });
     expect(fetchSpy).toHaveBeenNthCalledWith(
       3,
@@ -1271,8 +1272,62 @@ describe("operatorControl", () => {
         body: JSON.stringify({
           content: [
             "<@operator-1> Could not stop the current project.",
-            "`stopProject` does not take any arguments.",
-            "Usage: `stopProject`",
+            "`stopProject` only accepts `whenProjectComplete` as an optional argument.",
+            "Usage: `stopProject` or `stopProject whenProjectComplete`",
+          ].join("\n"),
+        }),
+      }),
+    );
+  });
+
+  it("acknowledges an authorized deferred stopProject request and keeps the runtime online", async () => {
+    const workDir = await createTempWorkDir();
+    tempDirs.push(workDir);
+    vi.stubEnv("DISCORD_BOT_TOKEN", "bot-token");
+    vi.stubEnv("DISCORD_CONTROL_GUILD_ID", "guild-1");
+    vi.stubEnv("DISCORD_CONTROL_CHANNEL_ID", "channel-1");
+    vi.stubEnv("DISCORD_OPERATOR_USER_ID", "operator-1");
+
+    const onStopProject = vi.fn().mockResolvedValue({
+      ok: true,
+      action: "stop-when-complete-scheduled",
+      message: "Project `habit-cli` will keep running until it has no actionable issues left. Evolvo will then stop it automatically, return to self-work, and remain online.",
+      project: {
+        displayName: "Habit CLI",
+        slug: "habit-cli",
+      },
+    });
+    const fetchSpy = vi.fn()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify([{ id: "7165", content: "boot", author: { id: "someone" } }]), { status: 200 }),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify([{ id: "7166", content: "stopProject whenProjectComplete", author: { id: "operator-1" } }]),
+          { status: 200 },
+        ),
+      )
+      .mockResolvedValueOnce(new Response(JSON.stringify({ id: "ack-stop-when-complete" }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchSpy);
+
+    await pollDiscordGracefulShutdownCommand(workDir, { onStopProject });
+
+    expect(onStopProject).toHaveBeenCalledWith({
+      messageId: "7166",
+      requestedAt: expect.any(String),
+      requestedBy: "discord:operator-1",
+      mode: "when-project-complete",
+    });
+    expect(fetchSpy).toHaveBeenNthCalledWith(
+      3,
+      "https://discord.com/api/v10/channels/channel-1/messages",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({
+          content: [
+            "<@operator-1> Current project `Habit CLI` will stop when complete.",
+            "Project `habit-cli` will keep running until it has no actionable issues left. Evolvo will then stop it automatically, return to self-work, and remain online.",
+            "Evolvo will return to self-work afterward and remain online for further operator commands.",
           ].join("\n"),
         }),
       }),
@@ -1635,6 +1690,7 @@ describe("operatorControl", () => {
       messageId: "slash-stop-1",
       requestedAt: expect.any(String),
       requestedBy: "discord:operator-1",
+      mode: "now",
     });
     expect(interaction.editReply).toHaveBeenCalledWith({
       content: [
@@ -1648,6 +1704,55 @@ describe("operatorControl", () => {
         "<@operator-1> Stopped current project `Habit CLI`.",
         "Project `habit-cli` will not be selected again until `startProject <project-name>` is used.",
         "Runtime remains online and is waiting for further operator commands.",
+      ].join("\n"),
+    });
+  });
+
+  it("handles an authorized /stopproject slash command in deferred mode", async () => {
+    const workDir = await createTempWorkDir();
+    tempDirs.push(workDir);
+    vi.stubEnv("DISCORD_BOT_TOKEN", "bot-token");
+    vi.stubEnv("DISCORD_CONTROL_GUILD_ID", "guild-1");
+    vi.stubEnv("DISCORD_CONTROL_CHANNEL_ID", "channel-1");
+    vi.stubEnv("DISCORD_OPERATOR_USER_ID", "operator-1");
+
+    const onStopProject = vi.fn().mockResolvedValue({
+      ok: true,
+      action: "stop-when-complete-scheduled",
+      message: "Project `habit-cli` will keep running until it has no actionable issues left. Evolvo will then stop it automatically, return to self-work, and remain online.",
+      project: {
+        displayName: "Habit CLI",
+        slug: "habit-cli",
+      },
+    });
+    const interaction = createSlashInteraction({
+      id: "slash-stop-when-complete-1",
+      commandName: "stopproject",
+      values: {
+        mode: "when-project-complete",
+      },
+    });
+
+    const result = await handleDiscordSlashCommandInteraction(interaction, workDir, { onStopProject });
+
+    expect(onStopProject).toHaveBeenCalledWith({
+      messageId: "slash-stop-when-complete-1",
+      requestedAt: expect.any(String),
+      requestedBy: "discord:operator-1",
+      mode: "when-project-complete",
+    });
+    expect(interaction.editReply).toHaveBeenCalledWith({
+      content: [
+        "<@operator-1> Current project `Habit CLI` will stop when complete.",
+        "Project `habit-cli` will keep running until it has no actionable issues left. Evolvo will then stop it automatically, return to self-work, and remain online.",
+        "Evolvo will return to self-work afterward and remain online for further operator commands.",
+      ].join("\n"),
+    });
+    expect(result).toEqual({
+      replyContent: [
+        "<@operator-1> Current project `Habit CLI` will stop when complete.",
+        "Project `habit-cli` will keep running until it has no actionable issues left. Evolvo will then stop it automatically, return to self-work, and remain online.",
+        "Evolvo will return to self-work afterward and remain online for further operator commands.",
       ].join("\n"),
     });
   });

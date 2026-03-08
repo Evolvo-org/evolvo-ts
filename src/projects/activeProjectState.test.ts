@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  clearActiveProjectState,
   getActiveProjectStatePath,
   readActiveProjectState,
   stopActiveProjectState,
@@ -30,6 +31,7 @@ describe("activeProjectState", () => {
       version: 2,
       activeProjectSlug: null,
       selectionState: null,
+      deferredStopMode: null,
       updatedAt: null,
       requestedBy: null,
       source: null,
@@ -52,6 +54,7 @@ describe("activeProjectState", () => {
       version: 2,
       activeProjectSlug: "habit-cli",
       selectionState: "active",
+      deferredStopMode: null,
       updatedAt: "2026-03-08T12:00:00.000Z",
       requestedBy: "discord:operator-1",
       source: "start-project-command",
@@ -79,6 +82,7 @@ describe("activeProjectState", () => {
       version: 2,
       activeProjectSlug: null,
       selectionState: null,
+      deferredStopMode: null,
       updatedAt: null,
       requestedBy: null,
       source: null,
@@ -102,6 +106,7 @@ describe("activeProjectState", () => {
       version: 2,
       activeProjectSlug: null,
       selectionState: null,
+      deferredStopMode: null,
       updatedAt: null,
       requestedBy: null,
       source: null,
@@ -130,6 +135,7 @@ describe("activeProjectState", () => {
       version: 2,
       activeProjectSlug: "habit-cli",
       selectionState: "active",
+      deferredStopMode: null,
       updatedAt: "2026-03-08T12:00:00.000Z",
       requestedBy: "discord:operator-1",
       source: "start-project-command",
@@ -160,7 +166,40 @@ describe("activeProjectState", () => {
         version: 2,
         activeProjectSlug: "habit-cli",
         selectionState: "stopped",
+        deferredStopMode: null,
         updatedAt: "2026-03-08T12:10:00.000Z",
+        requestedBy: "discord:operator-1",
+        source: "stop-project-command",
+      },
+    });
+  });
+
+  it("schedules a deferred stop when requested", async () => {
+    const workDir = await createTempWorkDir();
+    tempDirs.push(workDir);
+    await setActiveProjectState({
+      workDir,
+      slug: "habit-cli",
+      requestedBy: "discord:operator-1",
+      source: "start-project-command",
+      updatedAt: "2026-03-08T12:00:00.000Z",
+    });
+
+    await expect(
+      stopActiveProjectState({
+        workDir,
+        requestedBy: "discord:operator-1",
+        mode: "when-project-complete",
+        updatedAt: "2026-03-08T12:12:00.000Z",
+      }),
+    ).resolves.toEqual({
+      status: "stop-when-complete-scheduled",
+      state: {
+        version: 2,
+        activeProjectSlug: "habit-cli",
+        selectionState: "active",
+        deferredStopMode: "when-project-complete",
+        updatedAt: "2026-03-08T12:12:00.000Z",
         requestedBy: "discord:operator-1",
         source: "stop-project-command",
       },
@@ -183,6 +222,7 @@ describe("activeProjectState", () => {
         version: 2,
         activeProjectSlug: null,
         selectionState: null,
+        deferredStopMode: null,
         updatedAt: null,
         requestedBy: null,
         source: null,
@@ -218,6 +258,45 @@ describe("activeProjectState", () => {
         version: 2,
         activeProjectSlug: "habit-cli",
         selectionState: "stopped",
+        deferredStopMode: null,
+        updatedAt: "2026-03-08T12:25:00.000Z",
+        requestedBy: "discord:operator-1",
+        source: "stop-project-command",
+      },
+    });
+  });
+
+  it("treats repeated deferred stop requests as already scheduled", async () => {
+    const workDir = await createTempWorkDir();
+    tempDirs.push(workDir);
+    await setActiveProjectState({
+      workDir,
+      slug: "habit-cli",
+      requestedBy: "discord:operator-1",
+      source: "start-project-command",
+      updatedAt: "2026-03-08T12:20:00.000Z",
+    });
+    await stopActiveProjectState({
+      workDir,
+      requestedBy: "discord:operator-1",
+      mode: "when-project-complete",
+      updatedAt: "2026-03-08T12:25:00.000Z",
+    });
+
+    await expect(
+      stopActiveProjectState({
+        workDir,
+        requestedBy: "discord:operator-1",
+        mode: "when-project-complete",
+        updatedAt: "2026-03-08T12:30:00.000Z",
+      }),
+    ).resolves.toEqual({
+      status: "already-stop-when-complete-scheduled",
+      state: {
+        version: 2,
+        activeProjectSlug: "habit-cli",
+        selectionState: "active",
+        deferredStopMode: "when-project-complete",
         updatedAt: "2026-03-08T12:25:00.000Z",
         requestedBy: "discord:operator-1",
         source: "stop-project-command",
@@ -247,9 +326,38 @@ describe("activeProjectState", () => {
       version: 2,
       activeProjectSlug: "habit-cli",
       selectionState: "active",
+      deferredStopMode: null,
       updatedAt: "2026-03-08T12:20:00.000Z",
       requestedBy: "discord:operator-1",
       source: "start-project-command",
+    });
+  });
+
+  it("clears the active project state after a deferred stop completes", async () => {
+    const workDir = await createTempWorkDir();
+    tempDirs.push(workDir);
+    await setActiveProjectState({
+      workDir,
+      slug: "habit-cli",
+      requestedBy: "discord:operator-1",
+      source: "start-project-command",
+      updatedAt: "2026-03-08T12:20:00.000Z",
+    });
+    await stopActiveProjectState({
+      workDir,
+      requestedBy: "discord:operator-1",
+      mode: "when-project-complete",
+      updatedAt: "2026-03-08T12:25:00.000Z",
+    });
+
+    await expect(clearActiveProjectState(workDir)).resolves.toEqual({
+      version: 2,
+      activeProjectSlug: null,
+      selectionState: null,
+      deferredStopMode: null,
+      updatedAt: null,
+      requestedBy: null,
+      source: null,
     });
   });
 
@@ -269,6 +377,7 @@ describe("activeProjectState", () => {
       version: 2,
       activeProjectSlug: null,
       selectionState: null,
+      deferredStopMode: null,
       updatedAt: null,
       requestedBy: null,
       source: null,
@@ -295,6 +404,7 @@ describe("activeProjectState", () => {
         version: 99,
         activeProjectSlug: 7,
         selectionState: "paused",
+        deferredStopMode: "later",
         updatedAt: false,
         requestedBy: "discord:operator-1",
         source: "unknown",
@@ -306,6 +416,7 @@ describe("activeProjectState", () => {
       version: 2,
       activeProjectSlug: null,
       selectionState: null,
+      deferredStopMode: null,
       updatedAt: null,
       requestedBy: null,
       source: null,
