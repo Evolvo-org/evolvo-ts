@@ -94,7 +94,7 @@ function createInventory(project: ProjectRecord, items: StagedWorkItem[]): Stage
     projects: [projectInventory],
     activityState: {
       version: 1,
-      projects: [projectInventory.activity],
+      projects: projectInventory.activity ? [projectInventory.activity] : [],
     },
   };
 }

@@ -60,7 +60,7 @@ export async function buildWorkerInventory(options: {
   workDir: string;
   defaultProject: DefaultProjectContext;
   trackerIssueManager: TaskIssueManager;
-  boardsClient: GitHubProjectsV2Client;
+  boardsClient: Pick<GitHubProjectsV2Client, "listProjectIssueItems" | "ensureRepositoryIssueItem" | "moveProjectItemToStage">;
 }): Promise<StagedWorkInventory> {
   return buildStagedWorkInventory(options);
 }

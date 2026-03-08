@@ -121,7 +121,7 @@ function normalizeBoardItem(project: ProjectRecord, item: ProjectBoardIssueItem)
 async function reconcileProjectIssuesOntoBoard(options: {
   project: ProjectRecord;
   issueManager: TaskIssueManager;
-  boardsClient: GitHubProjectsV2Client;
+  boardsClient: Pick<GitHubProjectsV2Client, "listProjectIssueItems" | "ensureRepositoryIssueItem" | "moveProjectItemToStage">;
 }): Promise<ProjectBoardIssueItem[]> {
   const openIssues = await options.issueManager.listOpenIssues();
   const existingItems = await options.boardsClient.listProjectIssueItems(options.project);
@@ -174,7 +174,7 @@ export async function buildStagedWorkInventory(options: {
   workDir: string;
   defaultProject: DefaultProjectContext;
   trackerIssueManager: TaskIssueManager;
-  boardsClient: GitHubProjectsV2Client;
+  boardsClient: Pick<GitHubProjectsV2Client, "listProjectIssueItems" | "ensureRepositoryIssueItem" | "moveProjectItemToStage">;
 }): Promise<StagedWorkInventory> {
   const [registry, activeProjectsState] = await Promise.all([
     readProjectRegistry(options.workDir, options.defaultProject),
