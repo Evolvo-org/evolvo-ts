@@ -221,14 +221,14 @@ export async function finalizeChallengeSuccess(
   return completionResult.ok || alreadyTerminal;
 }
 
-export async function applyChallengeRetryGate(options: {
+export async function applyChallengeRetryGate<TIssue extends IssueSummary>(options: {
   issueManager: TaskIssueManager;
-  openIssues: IssueSummary[];
-  issues: IssueSummary[];
+  openIssues: TIssue[];
+  issues: TIssue[];
   cycle: number;
-  onBlockedTransition: (issue: IssueSummary, cycle: number, reason: string) => Promise<void>;
-}): Promise<IssueSummary[]> {
-  const eligible: IssueSummary[] = [];
+  onBlockedTransition: (issue: TIssue, cycle: number, reason: string) => Promise<void>;
+}): Promise<TIssue[]> {
+  const eligible: TIssue[] = [];
 
   for (const issue of options.issues) {
     if (!isChallengeIssue(issue)) {
@@ -257,7 +257,10 @@ export async function applyChallengeRetryGate(options: {
       if (!labelUpdate.ok) {
         console.error(`Could not sync retry labels for issue #${issue.number}: ${labelUpdate.message}`);
       } else if (labelUpdate.issue) {
-        nextIssue = labelUpdate.issue;
+        nextIssue = {
+          ...issue,
+          ...labelUpdate.issue,
+        };
       }
     }
 

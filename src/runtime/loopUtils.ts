@@ -45,15 +45,15 @@ type IssuePrioritySignal = {
   weight: number;
 };
 
-type RankedIssueCandidate = {
-  issue: IssueSummary;
+type RankedIssueCandidate<TIssue extends IssueSummary = IssueSummary> = {
+  issue: TIssue;
   score: number;
   signals: IssuePrioritySignal[];
   originalIndex: number;
 };
 
-export type IssueSelectionDecision = {
-  selectedIssue: IssueSummary | null;
+export type IssueSelectionDecision<TIssue extends IssueSummary = IssueSummary> = {
+  selectedIssue: TIssue | null;
   candidateCount: number;
   rationale: string | null;
 };
@@ -103,9 +103,9 @@ function hasPriorityKeyword(text: string, patterns: RegExp[]): boolean {
   return patterns.some((pattern) => pattern.test(text));
 }
 
-function buildPrioritySignals(
-  issue: IssueSummary,
-  issues: IssueSummary[],
+function buildPrioritySignals<TIssue extends IssueSummary>(
+  issue: TIssue,
+  issues: TIssue[],
   topicTokensByIssueNumber: Map<number, Set<string>>,
 ): IssuePrioritySignal[] {
   const text = `${issue.title}\n${issue.description}`.toLowerCase();
@@ -209,7 +209,10 @@ function buildPrioritySignals(
   return signals;
 }
 
-function compareRankedIssueCandidates(left: RankedIssueCandidate, right: RankedIssueCandidate): number {
+function compareRankedIssueCandidates<TIssue extends IssueSummary>(
+  left: RankedIssueCandidate<TIssue>,
+  right: RankedIssueCandidate<TIssue>,
+): number {
   if (right.score !== left.score) {
     return right.score - left.score;
   }
@@ -254,7 +257,7 @@ function buildSelectionRationale(prefix: string | null, details: string | null):
   return prefix ?? details;
 }
 
-function rankIssueCandidates(issues: IssueSummary[]): IssueSelectionDecision {
+function rankIssueCandidates<TIssue extends IssueSummary>(issues: TIssue[]): IssueSelectionDecision<TIssue> {
   if (issues.length === 0) {
     return {
       selectedIssue: null,
@@ -297,7 +300,7 @@ function rankIssueCandidates(issues: IssueSummary[]): IssueSelectionDecision {
   };
 }
 
-function prioritizeIssueCandidates(issues: IssueSummary[]): IssueSelectionDecision {
+function prioritizeIssueCandidates<TIssue extends IssueSummary>(issues: TIssue[]): IssueSelectionDecision<TIssue> {
   if (issues.length === 0) {
     return {
       selectedIssue: null,
@@ -357,10 +360,15 @@ function prioritizeIssueCandidates(issues: IssueSummary[]): IssueSelectionDecisi
   return rankIssueCandidates(issues);
 }
 
-function issueTargetsProject(issue: IssueSummary, projectSlug: string): boolean {
+function issueTargetsProject(issue: IssueSummary & { projectSlug?: string | null }, projectSlug: string): boolean {
   const normalizedSlug = projectSlug.trim().toLowerCase();
   if (!normalizedSlug) {
     return false;
+  }
+
+  const directProjectSlug = issue.projectSlug?.trim().toLowerCase();
+  if (directProjectSlug === normalizedSlug) {
+    return true;
   }
 
   const provisioningSlug = parseProjectProvisioningIssueMetadata(issue.description)?.slug?.trim().toLowerCase();
@@ -371,10 +379,14 @@ function issueTargetsProject(issue: IssueSummary, projectSlug: string): boolean 
   return issue.labels.some((label) => label.trim().toLowerCase() === `${PROJECT_LABEL_PREFIX}${normalizedSlug}`);
 }
 
-export function prioritizeIssuesForWork(
-  issues: IssueSummary[],
+export function prioritizeIssuesForWork<TIssue extends IssueSummary>(
+  issues: TIssue[],
+  options?: { activeProjectSlug?: string | null; stoppedProjectSlug?: string | null },
+): IssueSelectionDecision<TIssue>;
+export function prioritizeIssuesForWork<TIssue extends IssueSummary>(
+  issues: TIssue[],
   options: { activeProjectSlug?: string | null; stoppedProjectSlug?: string | null } = {},
-): IssueSelectionDecision {
+): IssueSelectionDecision<TIssue> {
   const notCompleted = issues.filter((issue) => !hasIssueLabel(issue, "completed") && !hasIssueLabel(issue, "blocked"));
   if (notCompleted.length === 0) {
     return {

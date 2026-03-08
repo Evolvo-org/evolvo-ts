@@ -33,6 +33,9 @@ function createClientMock() {
     get: vi.fn(),
     post: vi.fn(),
     patch: vi.fn(),
+    getApi: vi.fn(),
+    postApi: vi.fn(),
+    patchApi: vi.fn(),
   };
 }
 
@@ -56,6 +59,24 @@ describe("TaskIssueManager", () => {
       },
     });
     expect(client.post).toHaveBeenCalledWith("", { title: "New", body: "Details" });
+  });
+
+  it("can target a repository override when creating an issue", async () => {
+    const client = createClientMock();
+    client.postApi.mockResolvedValue(createIssue({ number: 30, title: "Project", body: "Repo" }));
+    const manager = new TaskIssueManager(client as never, {
+      owner: "evolvo-auto",
+      repo: "evolvo-web",
+    });
+
+    const result = await manager.createIssue("Project", "Repo");
+
+    expect(result.issue?.number).toBe(30);
+    expect(client.postApi).toHaveBeenCalledWith(
+      "/repos/evolvo-auto/evolvo-web/issues",
+      { title: "Project", body: "Repo" },
+    );
+    expect(client.post).not.toHaveBeenCalled();
   });
 
   it("rejects creating an issue with an empty title", async () => {
@@ -103,6 +124,26 @@ describe("TaskIssueManager", () => {
       ...Array.from({ length: 96 }, (_, index) => index + 5),
       101,
     ]);
+  });
+
+  it("lists open issues from a repository override via the GitHub API helpers", async () => {
+    const client = createClientMock();
+    client.getApi.mockResolvedValue([
+      createIssue({ number: 7 }),
+      createIssue({ number: 8, pull_request: { url: "pr" } }),
+    ]);
+    const manager = new TaskIssueManager(client as never, {
+      owner: "evolvo-auto",
+      repo: "evolvo-web",
+    });
+
+    const result = await manager.listOpenIssues();
+
+    expect(result.map((issue) => issue.number)).toEqual([7]);
+    expect(client.getApi).toHaveBeenCalledWith(
+      "/repos/evolvo-auto/evolvo-web/issues?state=open&per_page=100&page=1",
+    );
+    expect(client.get).not.toHaveBeenCalled();
   });
 
   it("returns only authorized open issues and closes unauthorized ones", async () => {

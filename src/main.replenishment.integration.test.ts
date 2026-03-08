@@ -23,6 +23,8 @@ const readActiveProjectStateMock = vi.fn();
 const stopActiveProjectStateMock = vi.fn();
 const resolveProjectExecutionContextForIssueMock = vi.fn();
 const buildProjectRoutingBlockedCommentMock = vi.fn();
+const buildUnifiedIssueQueueMock = vi.fn();
+const selectIssueForWorkWithOpenAiMock = vi.fn();
 
 const TEST_WORK_DIR = "/tmp/evolvo";
 const TEST_STATE_DIR = `${TEST_WORK_DIR}/.evolvo`;
@@ -148,6 +150,7 @@ function restoreOperatorEnv(): void {
 vi.mock("./environment.js", () => ({
   GITHUB_OWNER: "owner",
   GITHUB_REPO: "repo",
+  OPENAI_API_KEY: "test-openai-key",
 }));
 
 vi.mock("./constants/workDir.js", () => ({
@@ -235,7 +238,23 @@ vi.mock("./projects/activeProjectState.js", () => ({
 vi.mock("./projects/projectExecutionContext.js", () => ({
   PROJECT_ROUTING_BLOCKED_LABEL: "blocked",
   buildProjectRoutingBlockedComment: buildProjectRoutingBlockedCommentMock,
+  buildProjectExecutionContext: (project: {
+    trackerRepo: { owner: string; repo: string };
+    executionRepo: { owner: string; repo: string };
+  }) => ({
+    project,
+    trackerRepository: `${project.trackerRepo.owner}/${project.trackerRepo.repo}`,
+    executionRepository: `${project.executionRepo.owner}/${project.executionRepo.repo}`,
+  }),
   resolveProjectExecutionContextForIssue: resolveProjectExecutionContextForIssueMock,
+}));
+
+vi.mock("./issues/unifiedIssueQueue.js", () => ({
+  buildUnifiedIssueQueue: buildUnifiedIssueQueueMock,
+}));
+
+vi.mock("./agents/issueSelectionOpenAi.js", () => ({
+  selectIssueForWorkWithOpenAi: selectIssueForWorkWithOpenAiMock,
 }));
 
 vi.mock("./github/githubConfig.js", () => ({
@@ -303,6 +322,21 @@ vi.mock("./github/githubClient.js", async () => {
       }
       return issue as T;
     }
+
+    public async getApi<T>(path: string): Promise<T> {
+      const normalized = path.replace(/^\/repos\/[^/]+\/[^/]+\/issues/, "");
+      return this.get<T>(normalized);
+    }
+
+    public async postApi<T>(path: string, body: { title?: string; body?: string }): Promise<T> {
+      const normalized = path.replace(/^\/repos\/[^/]+\/[^/]+\/issues/, "");
+      return this.post<T>(normalized, body);
+    }
+
+    public async patchApi<T>(path: string, body: { labels?: string[]; state?: "open" | "closed" }): Promise<T> {
+      const normalized = path.replace(/^\/repos\/[^/]+\/[^/]+\/issues/, "");
+      return this.patch<T>(normalized, body);
+    }
   }
 
   return {
@@ -327,6 +361,42 @@ describe("main replenishment integration", () => {
     runPlannerAgentMock.mockReset();
     generateStartupIssueTemplatesMock.mockReset();
     generateStartupIssueTemplatesMock.mockResolvedValue([]);
+    buildUnifiedIssueQueueMock.mockReset();
+    buildUnifiedIssueQueueMock.mockImplementation(async () => ({
+      issues: mockApiState.issues
+        .filter((issue) => issue.state === "open")
+        .map((issue) => ({
+          number: issue.number,
+          title: issue.title,
+          description: issue.body,
+          state: issue.state,
+          labels: issue.labels.map((label) => label.name),
+          queueKey: `tracker:owner/repo#${issue.number}`,
+          sourceKind: "tracker",
+          projectSlug: null,
+          repository: {
+            owner: "owner",
+            repo: "repo",
+            url: "https://github.com/owner/repo",
+            reference: "owner/repo",
+          },
+          project: null,
+        })),
+      unauthorizedClosures: [],
+      activeManagedProject: null,
+    }));
+    selectIssueForWorkWithOpenAiMock.mockReset();
+    selectIssueForWorkWithOpenAiMock.mockImplementation(async (options: {
+      issues: import("./issues/unifiedIssueQueue.js").UnifiedIssue[];
+      activeProjectSlug?: string | null;
+      stoppedProjectSlug?: string | null;
+    }) => {
+      const { prioritizeIssuesForWork } = await import("./runtime/loopUtils.js");
+      return prioritizeIssuesForWork(options.issues, {
+        activeProjectSlug: options.activeProjectSlug,
+        stoppedProjectSlug: options.stoppedProjectSlug,
+      });
+    });
     runPlannerAgentMock.mockImplementation(async (input: {
       cycle: number;
       openIssueCount: number;

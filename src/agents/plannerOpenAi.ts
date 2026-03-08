@@ -8,6 +8,11 @@ const execFileAsync = promisify(execFile);
 const OPENAI_RESPONSES_API_URL = "https://api.openai.com/v1/responses";
 export const PLANNER_OPENAI_MODEL = "gpt-5.3-codex";
 const PLANNER_MAX_TOOL_ROUNDS = 8;
+const PLANNER_FINALIZATION_INSTRUCTION = [
+  "You have already inspected the repository enough for planning.",
+  "Do not call any more tools.",
+  "Return the final JSON issue batch now using the evidence you already gathered.",
+].join(" ");
 const PLANNER_REPOSITORY_LIST_LIMIT = 200;
 const PLANNER_REPOSITORY_READ_LINE_LIMIT = 400;
 const PLANNER_REPOSITORY_SEARCH_LIMIT = 50;
@@ -248,7 +253,26 @@ export async function runPlannerOpenAi(input: RunPlannerOpenAiInput): Promise<Ru
     }
   }
 
-  throw new Error(`Planner exceeded the maximum tool-call rounds (${PLANNER_MAX_TOOL_ROUNDS}).`);
+  conversation.push({
+    role: "user",
+    content: PLANNER_FINALIZATION_INSTRUCTION,
+  });
+  const finalResponse = await createPlannerResponse({
+    apiKey: input.apiKey,
+    input: conversation,
+    requireInitialToolCall: false,
+    allowTools: false,
+  });
+
+  const finalOutput = Array.isArray(finalResponse.output) ? finalResponse.output : [];
+  const extraFunctionCalls = finalOutput.filter(isPlannerResponseFunctionCall);
+  if (extraFunctionCalls.length > 0) {
+    throw new Error(`Planner exceeded the maximum tool-call rounds (${PLANNER_MAX_TOOL_ROUNDS}).`);
+  }
+
+  return {
+    finalResponse: extractPlannerFinalResponse(finalResponse),
+  };
 }
 
 export async function runPlannerRepositoryTool(
@@ -283,7 +307,9 @@ async function createPlannerResponse(options: {
   apiKey: string;
   input: PlannerResponseInputItem[];
   requireInitialToolCall: boolean;
+  allowTools?: boolean;
 }): Promise<PlannerApiResponse> {
+  const allowTools = options.allowTools !== false;
   const response = await fetch(OPENAI_RESPONSES_API_URL, {
     method: "POST",
     headers: {
@@ -294,8 +320,12 @@ async function createPlannerResponse(options: {
       model: PLANNER_OPENAI_MODEL,
       instructions: PLANNER_SYSTEM_INSTRUCTIONS,
       input: options.input,
-      tools: PLANNER_REPOSITORY_TOOLS,
-      tool_choice: options.requireInitialToolCall ? "required" : "auto",
+      ...(allowTools
+        ? {
+          tools: PLANNER_REPOSITORY_TOOLS,
+          tool_choice: options.requireInitialToolCall ? "required" : "auto",
+        }
+        : {}),
       parallel_tool_calls: false,
       reasoning: { effort: "medium" },
       text: {

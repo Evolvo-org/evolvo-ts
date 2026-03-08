@@ -1,6 +1,8 @@
 import "dotenv/config";
 import { pathToFileURL } from "node:url";
 import type { CodingAgentRunResult } from "./agents/runCodingAgent.js";
+import { OPENAI_API_KEY } from "./environment.js";
+import { selectIssueForWorkWithOpenAi } from "./agents/issueSelectionOpenAi.js";
 import { configureCodingAgentExecutionContext, runCodingAgent } from "./agents/runCodingAgent.js";
 import { runPlannerAgent } from "./agents/plannerAgent.js";
 import { WORK_DIR } from "./constants/workDir.js";
@@ -24,13 +26,12 @@ import {
   formatIssueForLog,
   getRunLoopRetryDelayMs,
   isOutdatedIssue,
-  isTransientGitHubError,
-  logCreatedIssues,
-  logCycleQueueHealth,
-  logGitHubFallback,
-  logIssuePrioritizationDecision,
-  prioritizeIssuesForWork,
-  waitForRunLoopRetry,
+    isTransientGitHubError,
+    logCreatedIssues,
+    logCycleQueueHealth,
+    logGitHubFallback,
+    logIssuePrioritizationDecision,
+    waitForRunLoopRetry,
 } from "./runtime/loopUtils.js";
 import {
   markGracefulShutdownRequestEnforced,
@@ -68,6 +69,7 @@ import {
   type IssueSummary,
   type UnauthorizedIssueClosureResult,
 } from "./issues/taskIssueManager.js";
+import { buildUnifiedIssueQueue, type UnifiedIssue } from "./issues/unifiedIssueQueue.js";
 import {
   buildProjectProvisioningCompletionSummary,
   buildProjectProvisioningOutcomeComment,
@@ -79,6 +81,7 @@ import { readActiveProjectState, stopActiveProjectState } from "./projects/activ
 import {
   PROJECT_ROUTING_BLOCKED_LABEL,
   buildProjectRoutingBlockedComment,
+  buildProjectExecutionContext,
   resolveProjectExecutionContextForIssue,
 } from "./projects/projectExecutionContext.js";
 import {
@@ -147,6 +150,24 @@ function logUnauthorizedIssueClosure(result: UnauthorizedIssueClosureResult): vo
   if (!result.closed) {
     console.error(result.closeMessage);
   }
+}
+
+function isTrackerIssue(issue: UnifiedIssue): boolean {
+  return issue.sourceKind === "tracker";
+}
+
+function getIssueManagerForUnifiedIssue(
+  trackerIssueManager: TaskIssueManager,
+  issue: UnifiedIssue,
+): TaskIssueManager {
+  if (issue.sourceKind === "tracker") {
+    return trackerIssueManager;
+  }
+
+  return trackerIssueManager.forRepository({
+    owner: issue.repository.owner,
+    repo: issue.repository.repo,
+  });
 }
 
 async function transitionIssueLifecycleState(
@@ -452,12 +473,17 @@ export async function main(): Promise<void> {
       let retryAttempt = 0;
       while (true) {
         try {
-          const authorizedOpenIssueInventory = await issueManager.listAuthorizedOpenIssues();
-          const openIssues = authorizedOpenIssueInventory.issues;
-          for (const unauthorizedClosure of authorizedOpenIssueInventory.unauthorizedClosures) {
+          const unifiedQueue = await buildUnifiedIssueQueue({
+            trackerIssueManager: issueManager,
+            workDir: WORK_DIR,
+            defaultProject: defaultProjectContext,
+            activeProjectState,
+          });
+          const openIssues = unifiedQueue.issues;
+          for (const unauthorizedClosure of unifiedQueue.unauthorizedClosures) {
             logUnauthorizedIssueClosure(unauthorizedClosure);
           }
-          const actionableIssues: IssueSummary[] = [];
+          const actionableIssues: UnifiedIssue[] = [];
 
           for (const issue of openIssues) {
             if (!isOutdatedIssue(issue)) {
@@ -465,7 +491,8 @@ export async function main(): Promise<void> {
               continue;
             }
 
-            const result = await issueManager.closeIssue(issue.number);
+            const scopedIssueManager = getIssueManagerForUnifiedIssue(issueManager, issue);
+            const result = await scopedIssueManager.closeIssue(issue.number);
             if (result.ok) {
               console.log(`Closed outdated issue ${formatIssueForLog(issue)}.`);
             } else {
@@ -473,10 +500,12 @@ export async function main(): Promise<void> {
             }
           }
 
+          const trackerActionableIssues = actionableIssues.filter((issue) => isTrackerIssue(issue));
+          const projectActionableIssues = actionableIssues.filter((issue) => !isTrackerIssue(issue));
           const retryEligibleIssues = await applyChallengeRetryGate({
             issueManager,
-            openIssues: actionableIssues,
-            issues: actionableIssues,
+            openIssues: trackerActionableIssues,
+            issues: trackerActionableIssues,
             cycle,
             onBlockedTransition: async (issue, transitionCycle, reason) => {
               await transitionIssueLifecycleState(issueManager, {
@@ -487,11 +516,14 @@ export async function main(): Promise<void> {
               });
             },
           });
+          const selectionCandidates = [...projectActionableIssues, ...retryEligibleIssues as UnifiedIssue[]];
           if (await stopIfSingleTaskGracefulShutdownRequested(WORK_DIR, "Stopping before starting a new task.", discordHandlers)) {
             return;
           }
 
-          const selectionDecision = prioritizeIssuesForWork(retryEligibleIssues, {
+          const selectionDecision = await selectIssueForWorkWithOpenAi({
+            apiKey: OPENAI_API_KEY,
+            issues: selectionCandidates,
             activeProjectSlug: activeProjectState.selectionState === "active" ? activeProjectState.activeProjectSlug : null,
             stoppedProjectSlug: activeProjectState.selectionState === "stopped" ? activeProjectState.activeProjectSlug : null,
           });
@@ -538,8 +570,13 @@ export async function main(): Promise<void> {
               openIssueCount: openIssues.length,
               minimumIssueCount: MIN_REPLENISH_ISSUES,
               maximumOpenIssues: MAX_OPEN_ISSUES,
-              issueManager,
-              workDir: WORK_DIR,
+              issueManager: unifiedQueue.activeManagedProject
+                ? issueManager.forRepository({
+                  owner: unifiedQueue.activeManagedProject.executionRepo.owner,
+                  repo: unifiedQueue.activeManagedProject.executionRepo.repo,
+                })
+                : issueManager,
+              workDir: unifiedQueue.activeManagedProject?.cwd ?? WORK_DIR,
             });
             const createdIssues = plannerResult.created;
             logCycleQueueHealth({
@@ -595,42 +632,52 @@ export async function main(): Promise<void> {
             openCount: openIssues.length,
             selectedIssue,
           });
-          const projectResolution = await resolveProjectExecutionContextForIssue({
-            issue: selectedIssue,
-            workDir: WORK_DIR,
-            defaultProject: defaultProjectContext,
-          });
-          if (!projectResolution.ok) {
-            const routingComment = buildProjectRoutingBlockedComment(selectedIssue, projectResolution);
-            await addIssueLifecycleComment(issueManager, selectedIssue.number, routingComment);
-            await transitionIssueLifecycleState(issueManager, {
-              issue: selectedIssue,
-              nextState: "blocked",
-              reason: `project routing blocked: ${projectResolution.message}`,
-              cycle,
-            });
-            const blockLabelResult = await issueManager.updateLabels(selectedIssue.number, {
-              add: [PROJECT_ROUTING_BLOCKED_LABEL],
-              remove: ["in progress"],
-            });
-            if (!blockLabelResult.ok) {
-              console.error(`Could not block issue #${selectedIssue.number} for invalid project routing: ${blockLabelResult.message}`);
-              continue issueCycleLoop;
-            }
+          const selectedIssueManager = getIssueManagerForUnifiedIssue(issueManager, selectedIssue);
+          const executionContext = selectedIssue.sourceKind === "project-repo" && selectedIssue.project !== null
+            ? buildProjectExecutionContext(selectedIssue.project)
+            : await (async () => {
+              const projectResolution = await resolveProjectExecutionContextForIssue({
+                issue: selectedIssue,
+                workDir: WORK_DIR,
+                defaultProject: defaultProjectContext,
+              });
+              if (!projectResolution.ok) {
+                const routingComment = buildProjectRoutingBlockedComment(selectedIssue, projectResolution);
+                await addIssueLifecycleComment(selectedIssueManager, selectedIssue.number, routingComment);
+                await transitionIssueLifecycleState(issueManager, {
+                  issue: selectedIssue,
+                  nextState: "blocked",
+                  reason: `project routing blocked: ${projectResolution.message}`,
+                  cycle,
+                });
+                const blockLabelResult = await selectedIssueManager.updateLabels(selectedIssue.number, {
+                  add: [PROJECT_ROUTING_BLOCKED_LABEL],
+                  remove: ["in progress"],
+                });
+                if (!blockLabelResult.ok) {
+                  console.error(`Could not block issue #${selectedIssue.number} for invalid project routing: ${blockLabelResult.message}`);
+                }
+                return null;
+              }
+
+              return projectResolution.context;
+            })();
+          if (executionContext === null) {
             continue;
           }
 
-          const executionContext = projectResolution.context;
-          await transitionIssueLifecycleState(issueManager, {
-            issue: selectedIssue,
-            nextState: "selected",
-            reason: "issue selected for active execution in this cycle",
-            cycle,
-          });
+          if (isTrackerIssue(selectedIssue)) {
+            await transitionIssueLifecycleState(issueManager, {
+              issue: selectedIssue,
+              nextState: "selected",
+              reason: "issue selected for active execution in this cycle",
+              cycle,
+            });
+          }
 
           let startedThisCycle = false;
           if (!hasIssueLabel(selectedIssue, "in progress")) {
-            const result = await issueManager.markInProgress(selectedIssue.number);
+            const result = await selectedIssueManager.markInProgress(selectedIssue.number);
             if (!result.ok) {
               console.error(`Could not mark issue #${selectedIssue.number} as in progress: ${result.message}`);
             } else {
@@ -639,7 +686,7 @@ export async function main(): Promise<void> {
           }
 
           if (startedThisCycle) {
-            await addIssueLifecycleComment(issueManager, selectedIssue.number, buildIssueStartComment(selectedIssue, executionContext));
+            await addIssueLifecycleComment(selectedIssueManager, selectedIssue.number, buildIssueStartComment(selectedIssue, executionContext));
             await notifyIssueStartedInDiscord({
               issue: {
                 number: selectedIssue.number,
@@ -657,15 +704,17 @@ export async function main(): Promise<void> {
             });
           }
 
-          const isProvisioningIssue = isProjectProvisioningRequestIssue(selectedIssue);
-          await transitionIssueLifecycleState(issueManager, {
-            issue: selectedIssue,
-            nextState: "executing",
-            reason: isProvisioningIssue
-              ? "project provisioning execution started"
-              : "coding agent execution started",
-            cycle,
-          });
+          const isProvisioningIssue = isTrackerIssue(selectedIssue) && isProjectProvisioningRequestIssue(selectedIssue);
+          if (isTrackerIssue(selectedIssue)) {
+            await transitionIssueLifecycleState(issueManager, {
+              issue: selectedIssue,
+              nextState: "executing",
+              reason: isProvisioningIssue
+                ? "project provisioning execution started"
+                : "coding agent execution started",
+              cycle,
+            });
+          }
 
           if (isProvisioningIssue) {
             const provisioningResult = await executeProjectProvisioningIssue({
@@ -676,7 +725,7 @@ export async function main(): Promise<void> {
               adminClient,
             });
             await addIssueLifecycleComment(
-              issueManager,
+              selectedIssueManager,
               selectedIssue.number,
               buildProjectProvisioningOutcomeComment(provisioningResult),
             );
@@ -697,14 +746,14 @@ export async function main(): Promise<void> {
                 reason: "project provisioning request completed successfully",
                 cycle,
               });
-              const completionResult = await issueManager.markCompleted(
+              const completionResult = await selectedIssueManager.markCompleted(
                 selectedIssue.number,
                 buildProjectProvisioningCompletionSummary(provisioningResult),
               );
               if (!completionResult.ok) {
                 console.error(`Could not mark issue #${selectedIssue.number} as completed: ${completionResult.message}`);
               }
-              const closeResult = await issueManager.closeIssue(selectedIssue.number);
+              const closeResult = await selectedIssueManager.closeIssue(selectedIssue.number);
               if (!closeResult.ok) {
                 console.error(`Could not close issue #${selectedIssue.number}: ${closeResult.message}`);
               } else {
@@ -722,13 +771,13 @@ export async function main(): Promise<void> {
                 reason: `project provisioning failed at ${provisioningResult.failureStep ?? "unknown"} step`,
                 cycle,
               });
-              const resetLabels = await issueManager.updateLabels(selectedIssue.number, {
+              const resetLabels = await selectedIssueManager.updateLabels(selectedIssue.number, {
                 remove: ["in progress"],
               });
               if (!resetLabels.ok) {
                 console.error(`Could not clear in-progress label for issue #${selectedIssue.number}: ${resetLabels.message}`);
               }
-              const closeResult = await issueManager.closeIssue(selectedIssue.number);
+              const closeResult = await selectedIssueManager.closeIssue(selectedIssue.number);
               if (!closeResult.ok) {
                 console.error(`Could not close failed provisioning issue #${selectedIssue.number}: ${closeResult.message}`);
               }
@@ -755,7 +804,7 @@ export async function main(): Promise<void> {
                 console.log(logLine);
               }
               console.log(
-                `[project-issues] using ${projectRepositoryIssueState.repository.reference} issue state to shape execution planning for tracker issue #${selectedIssue.number}.`,
+                `[project-issues] using ${projectRepositoryIssueState.repository.reference} issue state to shape execution planning for ${selectedIssue.queueKey}.`,
               );
             } catch (error) {
               const repositoryReference =
@@ -786,16 +835,22 @@ export async function main(): Promise<void> {
           });
 
           if (runError) {
-            await transitionIssueLifecycleState(issueManager, {
-              issue: selectedIssue,
-              nextState: "failed",
-              reason: "runtime error during coding agent execution",
-              cycle,
-            });
-            const challengeEvidence = await persistChallengeAttemptEvidence(WORK_DIR, selectedIssue, runError, runResult);
-            await updateChallengeMetrics(issueManager, selectedIssue, runError, runResult);
+            if (isTrackerIssue(selectedIssue)) {
+              await transitionIssueLifecycleState(issueManager, {
+                issue: selectedIssue,
+                nextState: "failed",
+                reason: "runtime error during coding agent execution",
+                cycle,
+              });
+            }
+            const challengeEvidence = isTrackerIssue(selectedIssue)
+              ? await persistChallengeAttemptEvidence(WORK_DIR, selectedIssue, runError, runResult)
+              : null;
+            if (isTrackerIssue(selectedIssue)) {
+              await updateChallengeMetrics(selectedIssueManager, selectedIssue, runError, runResult);
+            }
             await addIssueLifecycleComment(
-              issueManager,
+              selectedIssueManager,
               selectedIssue.number,
               buildIssueFailureComment(selectedIssue, runError, challengeEvidence),
             );
@@ -807,52 +862,60 @@ export async function main(): Promise<void> {
             mergedDefaultBranch = runResult.mergedPullRequest
               ? await tryResolveRepositoryDefaultBranch(executionContext.project.cwd)
               : null;
-            await transitionIssueLifecycleState(issueManager, {
-              issue: selectedIssue,
-              nextState: "under_review",
-              reason: "coding agent execution completed and review result is being processed",
-              cycle,
-              runResult,
-            });
-            await transitionIssueLifecycleState(issueManager, {
-              issue: selectedIssue,
-              nextState: mapReviewOutcomeToLifecycleState(runResult.summary.reviewOutcome),
-              reason: `review outcome received: ${runResult.summary.reviewOutcome}`,
-              cycle,
-              runResult,
-            });
-            if (runResult.summary.reviewOutcome === "accepted" && runResult.summary.pullRequestCreated) {
+            if (isTrackerIssue(selectedIssue)) {
               await transitionIssueLifecycleState(issueManager, {
                 issue: selectedIssue,
-                nextState: "committed",
-                reason: "commit evidence observed through pull request creation",
+                nextState: "under_review",
+                reason: "coding agent execution completed and review result is being processed",
                 cycle,
                 runResult,
               });
-            }
-            if (runResult.summary.pullRequestCreated) {
               await transitionIssueLifecycleState(issueManager, {
                 issue: selectedIssue,
-                nextState: "pr_opened",
-                reason: "pull request created for this lifecycle",
+                nextState: mapReviewOutcomeToLifecycleState(runResult.summary.reviewOutcome),
+                reason: `review outcome received: ${runResult.summary.reviewOutcome}`,
                 cycle,
                 runResult,
               });
+              if (runResult.summary.reviewOutcome === "accepted" && runResult.summary.pullRequestCreated) {
+                await transitionIssueLifecycleState(issueManager, {
+                  issue: selectedIssue,
+                  nextState: "committed",
+                  reason: "commit evidence observed through pull request creation",
+                  cycle,
+                  runResult,
+                });
+              }
+              if (runResult.summary.pullRequestCreated) {
+                await transitionIssueLifecycleState(issueManager, {
+                  issue: selectedIssue,
+                  nextState: "pr_opened",
+                  reason: "pull request created for this lifecycle",
+                  cycle,
+                  runResult,
+                });
+              }
             }
-            const challengeEvidence = await persistChallengeAttemptEvidence(WORK_DIR, selectedIssue, runError, runResult);
-            await updateChallengeMetrics(issueManager, selectedIssue, runError, runResult);
+            const challengeEvidence = isTrackerIssue(selectedIssue)
+              ? await persistChallengeAttemptEvidence(WORK_DIR, selectedIssue, runError, runResult)
+              : null;
+            if (isTrackerIssue(selectedIssue)) {
+              await updateChallengeMetrics(selectedIssueManager, selectedIssue, runError, runResult);
+            }
             await addIssueLifecycleComment(
-              issueManager,
+              selectedIssueManager,
               selectedIssue.number,
               buildIssueExecutionComment(selectedIssue, runResult, challengeEvidence, mergedDefaultBranch, executionContext),
             );
-            const challengeCompleted = await finalizeChallengeSuccess(
-              issueManager,
-              selectedIssue,
-              runResult,
-              mergedDefaultBranch,
-            );
-            if (challengeCompleted) {
+            const challengeCompleted = isTrackerIssue(selectedIssue)
+              ? await finalizeChallengeSuccess(
+                selectedIssueManager,
+                selectedIssue,
+                runResult,
+                mergedDefaultBranch,
+              )
+              : false;
+            if (challengeCompleted && isTrackerIssue(selectedIssue)) {
               await transitionIssueLifecycleState(issueManager, {
                 issue: selectedIssue,
                 nextState: "completed",
@@ -864,15 +927,17 @@ export async function main(): Promise<void> {
           }
 
           if (runResult?.mergedPullRequest) {
-            await transitionIssueLifecycleState(issueManager, {
-              issue: selectedIssue,
-              nextState: "merged",
-              reason: buildMergedPullRequestReason(mergedDefaultBranch),
-              cycle,
-              runResult,
-            });
+            if (isTrackerIssue(selectedIssue)) {
+              await transitionIssueLifecycleState(issueManager, {
+                issue: selectedIssue,
+                nextState: "merged",
+                reason: buildMergedPullRequestReason(mergedDefaultBranch),
+                cycle,
+                runResult,
+              });
+            }
             await addIssueLifecycleComment(
-              issueManager,
+              selectedIssueManager,
               selectedIssue.number,
               buildMergeOutcomeComment(selectedIssue, mergedDefaultBranch),
             );
@@ -882,13 +947,15 @@ export async function main(): Promise<void> {
                 "Post-merge restart workflow completed. This runtime is quitting so the restarted runtime can take over.";
               try {
                 await runPostMergeSelfRestart(WORK_DIR);
-                await transitionIssueLifecycleState(issueManager, {
-                  issue: selectedIssue,
-                  nextState: "restarted",
-                  reason: "post-merge restart workflow completed successfully",
-                  cycle,
-                  runResult,
-                });
+                if (isTrackerIssue(selectedIssue)) {
+                  await transitionIssueLifecycleState(issueManager, {
+                    issue: selectedIssue,
+                    nextState: "restarted",
+                    reason: "post-merge restart workflow completed successfully",
+                    cycle,
+                    runResult,
+                  });
+                }
                 console.log("Post-merge restart workflow completed. Exiting current runtime.");
               } catch (error) {
                 postMergeQuitReason =

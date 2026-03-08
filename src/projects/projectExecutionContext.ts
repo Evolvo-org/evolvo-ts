@@ -51,7 +51,7 @@ function formatRepositoryReference(repository: { owner: string; repo: string }):
   return `${repository.owner}/${repository.repo}`;
 }
 
-function buildExecutionContext(project: ProjectRecord): ProjectExecutionContext {
+export function buildProjectExecutionContext(project: ProjectRecord): ProjectExecutionContext {
   return {
     project,
     trackerRepository: formatRepositoryReference(project.trackerRepo),
@@ -104,7 +104,7 @@ export function resolveProjectExecutionContextFromRegistry(
 
   return {
     ok: true,
-    context: buildExecutionContext(project),
+    context: buildProjectExecutionContext(project),
   };
 }
 

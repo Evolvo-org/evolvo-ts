@@ -299,4 +299,94 @@ describe("plannerOpenAi", () => {
       await rm(workDir, { recursive: true, force: true });
     }
   });
+
+  it("forces a final no-tools response after the inspection round budget is exhausted", async () => {
+    const workDir = await mkdtemp(join(tmpdir(), "planner-openai-finalize-"));
+    await writeFile(join(workDir, "README.md"), "# Evolvo\n", "utf8");
+
+    const toolCallResponse = new Response(
+      JSON.stringify({
+        status: "completed",
+        output: [
+          {
+            type: "function_call",
+            call_id: "call_list_repo",
+            name: "list_repository_entries",
+            arguments: JSON.stringify({ path: ".", limit: 10 }),
+          },
+        ],
+      }),
+      {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      },
+    );
+
+    fetchMock
+      .mockResolvedValueOnce(toolCallResponse)
+      .mockResolvedValueOnce(toolCallResponse.clone())
+      .mockResolvedValueOnce(toolCallResponse.clone())
+      .mockResolvedValueOnce(toolCallResponse.clone())
+      .mockResolvedValueOnce(toolCallResponse.clone())
+      .mockResolvedValueOnce(toolCallResponse.clone())
+      .mockResolvedValueOnce(toolCallResponse.clone())
+      .mockResolvedValueOnce(toolCallResponse.clone())
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            status: "completed",
+            output: [
+              {
+                type: "message",
+                role: "assistant",
+                content: [
+                  {
+                    type: "output_text",
+                    text: JSON.stringify({
+                      issues: [
+                        {
+                          title: "Constrain planner inspection loops",
+                          description: "Force final planning output after bounded repository inspection.",
+                        },
+                      ],
+                    }),
+                  },
+                ],
+              },
+            ],
+          }),
+          {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          },
+        ),
+      );
+
+    try {
+      const { runPlannerOpenAi } = await import("./plannerOpenAi.js");
+
+      const result = await runPlannerOpenAi({
+        apiKey: "planner-key",
+        prompt: "Inspect the repository and return JSON issues.",
+        workDir,
+      });
+
+      expect(result.finalResponse).toContain("Constrain planner inspection loops");
+      expect(fetchMock).toHaveBeenCalledTimes(9);
+
+      const finalRequest = JSON.parse(fetchMock.mock.calls[8]?.[1]?.body as string) as {
+        input: Array<{ role?: string; content?: string }>;
+        tools?: unknown;
+        tool_choice?: unknown;
+      };
+      expect(finalRequest.tools).toBeUndefined();
+      expect(finalRequest.tool_choice).toBeUndefined();
+      expect(finalRequest.input.at(-1)).toEqual({
+        role: "user",
+        content: expect.stringContaining("Do not call any more tools."),
+      });
+    } finally {
+      await rm(workDir, { recursive: true, force: true });
+    }
+  });
 });

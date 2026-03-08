@@ -28,6 +28,13 @@ type GitHubIssue = {
   pull_request?: unknown;
 };
 
+type RepositoryIssueTarget = {
+  owner: string;
+  repo: string;
+};
+
+export type IssueRepositoryTarget = RepositoryIssueTarget;
+
 export type IssueSummary = {
   number: number;
   title: string;
@@ -329,14 +336,55 @@ function buildLabels(issue: GitHubIssue, options: { inProgress: boolean; complet
 export class TaskIssueManager {
   private static readonly ISSUES_PER_PAGE = 100;
 
-  public constructor(private readonly client: GitHubClient) {}
+  public constructor(
+    private readonly client: GitHubClient,
+    private readonly repository: RepositoryIssueTarget | null = null,
+  ) {}
+
+  public forRepository(repository: IssueRepositoryTarget): TaskIssueManager {
+    return new TaskIssueManager(this.client, repository);
+  }
+
+  private buildRepositoryIssueApiPath(path: string): string {
+    if (this.repository === null) {
+      return path;
+    }
+
+    const owner = encodeURIComponent(this.repository.owner);
+    const repo = encodeURIComponent(this.repository.repo);
+    return `/repos/${owner}/${repo}/issues${path}`;
+  }
+
+  private async getIssueApi<T>(path: string): Promise<T> {
+    if (this.repository === null) {
+      return this.client.get<T>(path);
+    }
+
+    return this.client.getApi<T>(this.buildRepositoryIssueApiPath(path));
+  }
+
+  private async postIssueApi<T>(path: string, body?: unknown): Promise<T> {
+    if (this.repository === null) {
+      return this.client.post<T>(path, body);
+    }
+
+    return this.client.postApi<T>(this.buildRepositoryIssueApiPath(path), body);
+  }
+
+  private async patchIssueApi<T>(path: string, body?: unknown): Promise<T> {
+    if (this.repository === null) {
+      return this.client.patch<T>(path, body);
+    }
+
+    return this.client.patchApi<T>(this.buildRepositoryIssueApiPath(path), body);
+  }
 
   public async createIssue(title: string, description: string): Promise<IssueActionResult> {
     if (!title.trim()) {
       return { ok: false, message: "Issue title is required." };
     }
 
-    const created = await this.client.post<GitHubIssue>("", {
+    const created = await this.postIssueApi<GitHubIssue>("", {
       title: title.trim(),
       body: description.trim(),
     });
@@ -353,7 +401,7 @@ export class TaskIssueManager {
     let page = 1;
 
     while (true) {
-      const batch = await this.client.get<GitHubIssue[]>(
+      const batch = await this.getIssueApi<GitHubIssue[]>(
         `?state=open&per_page=${TaskIssueManager.ISSUES_PER_PAGE}&page=${page}`,
       );
       issues.push(...batch);
@@ -373,7 +421,7 @@ export class TaskIssueManager {
     let commentMessage: string | null = null;
 
     try {
-      await this.client.post(`/${issue.number}/comments`, {
+      await this.postIssueApi(`/${issue.number}/comments`, {
         body: UNAUTHORIZED_ISSUE_CLOSURE_COMMENT,
       });
       commentAdded = true;
@@ -385,7 +433,7 @@ export class TaskIssueManager {
     }
 
     try {
-      await this.client.patch<GitHubIssue>(`/${issue.number}`, { state: "closed" });
+      await this.patchIssueApi<GitHubIssue>(`/${issue.number}`, { state: "closed" });
       return {
         issueNumber: issue.number,
         issueTitle: issue.title,
@@ -445,7 +493,7 @@ export class TaskIssueManager {
     let page = 1;
 
     while (issues.length < requestedLimit) {
-      const batch = await this.client.get<GitHubIssue[]>(
+      const batch = await this.getIssueApi<GitHubIssue[]>(
         `?state=closed&sort=updated&direction=desc&per_page=${perPage}&page=${page}`,
       );
       issues.push(...batch.filter((issue) => issue.pull_request === undefined).map(formatIssue));
@@ -571,7 +619,7 @@ export class TaskIssueManager {
       return { ok: false, message: `Issue #${issueNumber} is already in progress.` };
     }
 
-    const updated = await this.client.patch<GitHubIssue>(`/${issueNumber}`, {
+    const updated = await this.patchIssueApi<GitHubIssue>(`/${issueNumber}`, {
       labels: buildLabels(issue, { inProgress: true, completed: false }),
     });
 
@@ -598,7 +646,7 @@ export class TaskIssueManager {
       return { ok: false, message: `Issue #${issueNumber} is closed and cannot be updated.` };
     }
 
-    await this.client.post(`/${issueNumber}/comments`, { body: trimmedComment });
+    await this.postIssueApi(`/${issueNumber}/comments`, { body: trimmedComment });
 
     return {
       ok: true,
@@ -627,8 +675,8 @@ export class TaskIssueManager {
       return { ok: false, message: `Issue #${issueNumber} is already marked as completed.` };
     }
 
-    await this.client.post(`/${issueNumber}/comments`, { body: trimmedSummary });
-    const updated = await this.client.patch<GitHubIssue>(`/${issueNumber}`, {
+    await this.postIssueApi(`/${issueNumber}/comments`, { body: trimmedSummary });
+    const updated = await this.patchIssueApi<GitHubIssue>(`/${issueNumber}`, {
       labels: buildLabels(issue, { inProgress: false, completed: true }),
     });
 
@@ -650,7 +698,7 @@ export class TaskIssueManager {
       return { ok: false, message: `Issue #${issueNumber} is already closed.` };
     }
 
-    await this.client.patch<GitHubIssue>(`/${issueNumber}`, { state: "closed" });
+    await this.patchIssueApi<GitHubIssue>(`/${issueNumber}`, { state: "closed" });
 
     return {
       ok: true,
@@ -700,7 +748,7 @@ export class TaskIssueManager {
       };
     }
 
-    const updated = await this.client.patch<GitHubIssue>(`/${issueNumber}`, {
+    const updated = await this.patchIssueApi<GitHubIssue>(`/${issueNumber}`, {
       labels: nextLabels,
     });
 
@@ -713,7 +761,7 @@ export class TaskIssueManager {
 
   private async getIssue(issueNumber: number): Promise<GitHubIssue | null> {
     try {
-      const issue = await this.client.get<GitHubIssue>(`/${issueNumber}`);
+      const issue = await this.getIssueApi<GitHubIssue>(`/${issueNumber}`);
       if (issue.pull_request !== undefined) {
         return null;
       }

@@ -52,6 +52,8 @@ const executeProjectProvisioningIssueMock = vi.fn();
 const isProjectProvisioningRequestIssueMock = vi.fn();
 const buildProjectProvisioningOutcomeCommentMock = vi.fn();
 const buildProjectProvisioningCompletionSummaryMock = vi.fn();
+const buildUnifiedIssueQueueMock = vi.fn();
+const selectIssueForWorkWithOpenAiMock = vi.fn();
 
 const DEFAULT_RUN_RESULT = {
   mergedPullRequest: false,
@@ -105,6 +107,7 @@ const DEFAULT_PROJECT_EXECUTION_CONTEXT = {
 vi.mock("./environment.js", () => ({
   GITHUB_OWNER: "owner",
   GITHUB_REPO: "repo",
+  OPENAI_API_KEY: "test-openai-key",
 }));
 
 vi.mock("./constants/workDir.js", () => ({
@@ -213,6 +216,14 @@ vi.mock("./projects/activeProjectState.js", () => ({
 vi.mock("./projects/projectExecutionContext.js", () => ({
   PROJECT_ROUTING_BLOCKED_LABEL: "blocked",
   buildProjectRoutingBlockedComment: buildProjectRoutingBlockedCommentMock,
+  buildProjectExecutionContext: (project: {
+    trackerRepo: { owner: string; repo: string };
+    executionRepo: { owner: string; repo: string };
+  }) => ({
+    project,
+    trackerRepository: `${project.trackerRepo.owner}/${project.trackerRepo.repo}`,
+    executionRepository: `${project.executionRepo.owner}/${project.executionRepo.repo}`,
+  }),
   resolveProjectExecutionContextForIssue: resolveProjectExecutionContextForIssueMock,
 }));
 
@@ -256,7 +267,16 @@ vi.mock("./issues/taskIssueManager.js", () => ({
     closeIssue = closeIssueMock;
     updateLabels = updateLabelsMock;
     createIssue = createIssueMock;
+    forRepository = () => this;
   },
+}));
+
+vi.mock("./issues/unifiedIssueQueue.js", () => ({
+  buildUnifiedIssueQueue: buildUnifiedIssueQueueMock,
+}));
+
+vi.mock("./agents/issueSelectionOpenAi.js", () => ({
+  selectIssueForWorkWithOpenAi: selectIssueForWorkWithOpenAiMock,
 }));
 
 describe("main", () => {
@@ -275,6 +295,42 @@ describe("main", () => {
     generateStartupIssueTemplatesMock.mockResolvedValue([]);
     replenishSelfImprovementIssuesMock.mockReset();
     replenishSelfImprovementIssuesMock.mockResolvedValue({ created: [] });
+    buildUnifiedIssueQueueMock.mockReset();
+    buildUnifiedIssueQueueMock.mockImplementation(async () => ({
+      issues: (await listOpenIssuesMock()).map((issue: {
+        number: number;
+        title: string;
+        description: string;
+        state: "open" | "closed";
+        labels: string[];
+      }) => ({
+        ...issue,
+        queueKey: `tracker:owner/repo#${issue.number}`,
+        sourceKind: "tracker",
+        projectSlug: null,
+        repository: {
+          owner: "owner",
+          repo: "repo",
+          url: "https://github.com/owner/repo",
+          reference: "owner/repo",
+        },
+        project: null,
+      })),
+      unauthorizedClosures: await unauthorizedIssueClosuresMock(),
+      activeManagedProject: null,
+    }));
+    selectIssueForWorkWithOpenAiMock.mockReset();
+    selectIssueForWorkWithOpenAiMock.mockImplementation(async (options: {
+      issues: import("./issues/unifiedIssueQueue.js").UnifiedIssue[];
+      activeProjectSlug?: string | null;
+      stoppedProjectSlug?: string | null;
+    }) => {
+      const { prioritizeIssuesForWork } = await import("./runtime/loopUtils.js");
+      return prioritizeIssuesForWork(options.issues, {
+        activeProjectSlug: options.activeProjectSlug,
+        stoppedProjectSlug: options.stoppedProjectSlug,
+      });
+    });
     runPlannerAgentMock.mockImplementation(async (input: {
       cycle: number;
       openIssueCount: number;
@@ -747,13 +803,13 @@ describe("main", () => {
     await main();
 
     expect(executeProjectProvisioningIssueMock).toHaveBeenCalledWith({
-      issue: {
+      issue: expect.objectContaining({
         number: 77,
         title: "Start project Habit CLI",
         description: "<!-- evolvo:project-provisioning -->",
         state: "open",
         labels: [],
-      },
+      }),
       workDir: "/tmp/evolvo",
       trackerOwner: "owner",
       trackerRepo: "repo",

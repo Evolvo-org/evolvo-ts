@@ -4,48 +4,19 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const runPlannerOpenAiMock = vi.fn();
-const readProjectRegistryMock = vi.fn();
-const inspectProjectMock = vi.fn();
-const getGitHubConfigMock = vi.fn();
 
 vi.mock("../environment.js", () => ({
   OPENAI_API_KEY: "planner-openai-key",
-  GITHUB_OWNER: "owner",
-  GITHUB_REPO: "repo",
 }));
 
 vi.mock("./plannerOpenAi.js", () => ({
   runPlannerOpenAi: runPlannerOpenAiMock,
 }));
 
-vi.mock("../projects/projectRegistry.js", () => ({
-  buildDefaultProjectContext: (context: unknown) => context,
-  readProjectRegistry: readProjectRegistryMock,
-}));
-
-vi.mock("../projects/projectRepositoryIssues.js", () => ({
-  ProjectRepositoryIssueInspector: class {
-    inspectProject = inspectProjectMock;
-  },
-}));
-
-vi.mock("../github/githubConfig.js", () => ({
-  getGitHubConfig: getGitHubConfigMock,
-}));
-
-vi.mock("../github/githubClient.js", () => ({
-  GitHubClient: class {},
-}));
-
 describe("plannerAgent", () => {
   beforeEach(() => {
     vi.resetModules();
     runPlannerOpenAiMock.mockReset();
-    readProjectRegistryMock.mockReset();
-    readProjectRegistryMock.mockResolvedValue({ version: 1, projects: [] });
-    inspectProjectMock.mockReset();
-    getGitHubConfigMock.mockReset();
-    getGitHubConfigMock.mockReturnValue({});
   });
 
   afterEach(() => {
@@ -140,41 +111,13 @@ describe("plannerAgent", () => {
     });
   });
 
-  it("includes active managed project issue state in the planner prompt", async () => {
+  it("builds the prompt from the target repository issue history only", async () => {
     runPlannerOpenAiMock.mockResolvedValueOnce({
       finalResponse: JSON.stringify({ issues: [] }),
     });
-    readProjectRegistryMock.mockResolvedValueOnce({
-      version: 1,
-      projects: [
-        {
-          slug: "evolvo",
-          displayName: "Evolvo",
-          kind: "default",
-          status: "active",
-        },
-        {
-          slug: "evolvo-web",
-          displayName: "evolvo-web",
-          kind: "managed",
-          status: "active",
-          cwd: "/home/paddy/evolvo-web",
-          executionRepo: {
-            owner: "evolvo-auto",
-            repo: "evolvo-web",
-          },
-        },
-      ],
-    });
-    inspectProjectMock.mockResolvedValueOnce({
-      projectSlug: "evolvo-web",
-      repository: {
-        owner: "evolvo-auto",
-        repo: "evolvo-web",
-        reference: "evolvo-auto/evolvo-web",
-        url: "https://github.com/evolvo-auto/evolvo-web",
-      },
-      openIssues: [
+    const createPlannedIssuesMock = vi.fn().mockResolvedValueOnce({ created: [] });
+    const issueManager = {
+      listOpenIssues: vi.fn().mockResolvedValueOnce([
         {
           number: 12,
           title: "Landing page polish",
@@ -182,8 +125,8 @@ describe("plannerAgent", () => {
           state: "open",
           labels: [],
         },
-      ],
-      recentClosedIssues: [
+      ]),
+      listRecentClosedIssues: vi.fn().mockResolvedValueOnce([
         {
           number: 9,
           title: "Initial scaffold",
@@ -191,12 +134,7 @@ describe("plannerAgent", () => {
           state: "closed",
           labels: [],
         },
-      ],
-    });
-    const createPlannedIssuesMock = vi.fn().mockResolvedValueOnce({ created: [] });
-    const issueManager = {
-      listOpenIssues: vi.fn().mockResolvedValueOnce([]),
-      listRecentClosedIssues: vi.fn().mockResolvedValueOnce([]),
+      ]),
       createPlannedIssues: createPlannedIssuesMock,
     } as unknown as import("../issues/taskIssueManager.js").TaskIssueManager;
     const { runPlannerAgent } = await import("./plannerAgent.js");
@@ -211,16 +149,9 @@ describe("plannerAgent", () => {
     });
 
     const plannerPrompt = runPlannerOpenAiMock.mock.calls[0]?.[0]?.prompt as string;
-    expect(inspectProjectMock).toHaveBeenCalledTimes(1);
-    expect(plannerPrompt).toContain("Registered managed project issue state:");
-    expect(plannerPrompt).toContain("### evolvo-web (`evolvo-web`)");
-    expect(plannerPrompt).toContain("- Execution repository: evolvo-auto/evolvo-web");
-    expect(plannerPrompt).toContain("- Workspace: `/home/paddy/evolvo-web`");
     expect(plannerPrompt).toContain("- #12 Landing page polish");
     expect(plannerPrompt).toContain("- #9 Initial scaffold");
-    expect(plannerPrompt).toContain(
-      "Use registered managed project issue state to gather work across all active projects, not just the default Evolvo repository.",
-    );
+    expect(plannerPrompt).not.toContain("Registered managed project issue state:");
   });
 
   it("deduplicates repeated closed-issue follow-ups before applying the 25-item prompt cap", async () => {
