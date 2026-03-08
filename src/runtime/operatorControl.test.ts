@@ -1,10 +1,12 @@
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { MessageFlags, type ChatInputCommandInteraction } from "discord.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as gracefulShutdown from "./gracefulShutdown.js";
 import {
   getDiscordControlConfigFromEnv,
+  handleDiscordSlashCommandInteraction,
   notifyCycleLimitDecisionAppliedInDiscord,
   notifyIssueStartedInDiscord,
   notifyRuntimeQuittingInDiscord,
@@ -27,6 +29,52 @@ function createDiscordControlMessage(id: number, content: string, authorId = "so
     content,
     author: { id: authorId },
   };
+}
+
+function createSlashInteraction(options: {
+  id?: string;
+  commandName: string;
+  guildId?: string | null;
+  channelId?: string | null;
+  userId?: string;
+  values?: Record<string, string | null | undefined>;
+}): ChatInputCommandInteraction {
+  let replied = false;
+  let deferred = false;
+
+  const interaction = {
+    id: options.id ?? "interaction-1",
+    commandName: options.commandName,
+    guildId: options.guildId ?? "guild-1",
+    channelId: options.channelId ?? "channel-1",
+    user: {
+      id: options.userId ?? "operator-1",
+    },
+    options: {
+      getString: (name: string): string | null => options.values?.[name] ?? null,
+    },
+    reply: vi.fn(async (_payload: unknown) => {
+      replied = true;
+      return undefined;
+    }),
+    deferReply: vi.fn(async () => {
+      deferred = true;
+      return undefined;
+    }),
+    editReply: vi.fn(async (_payload: unknown) => {
+      replied = true;
+      return undefined;
+    }),
+  };
+
+  return Object.defineProperties(interaction, {
+    replied: {
+      get: () => replied,
+    },
+    deferred: {
+      get: () => deferred,
+    },
+  }) as unknown as ChatInputCommandInteraction;
 }
 
 describe("operatorControl", () => {
@@ -1324,6 +1372,200 @@ describe("operatorControl", () => {
 
     expect(onStopProject).not.toHaveBeenCalled();
     expect(fetchSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it("handles an authorized /quit slash command in the configured control channel", async () => {
+    const workDir = await createTempWorkDir();
+    tempDirs.push(workDir);
+    vi.stubEnv("DISCORD_BOT_TOKEN", "bot-token");
+    vi.stubEnv("DISCORD_CONTROL_GUILD_ID", "guild-1");
+    vi.stubEnv("DISCORD_CONTROL_CHANNEL_ID", "channel-1");
+    vi.stubEnv("DISCORD_OPERATOR_USER_ID", "operator-1");
+
+    const interaction = createSlashInteraction({
+      id: "slash-quit-1",
+      commandName: "quit",
+      values: {
+        mode: "after-tasks",
+      },
+    });
+
+    const result = await handleDiscordSlashCommandInteraction(interaction, workDir);
+
+    expect(interaction.deferReply).toHaveBeenCalledTimes(1);
+    expect(interaction.editReply).toHaveBeenCalledWith({
+      content: "<@operator-1> Confirmed: `quit after tasks` is now active.\nEvolvo will finish the current actionable queue, will not plan or create new work, and will stop once the queue is drained.",
+    });
+    expect(result).toEqual({
+      gracefulShutdownRequest: {
+        version: 1,
+        source: "discord",
+        command: "quit after tasks",
+        mode: "after-tasks",
+        messageId: "slash-quit-1",
+        requestedAt: expect.any(String),
+        enforcedAt: null,
+      },
+      replyContent: "<@operator-1> Confirmed: `quit after tasks` is now active.\nEvolvo will finish the current actionable queue, will not plan or create new work, and will stop once the queue is drained.",
+    });
+  });
+
+  it("rejects slash commands from unauthorized Discord users", async () => {
+    vi.stubEnv("DISCORD_BOT_TOKEN", "bot-token");
+    vi.stubEnv("DISCORD_CONTROL_GUILD_ID", "guild-1");
+    vi.stubEnv("DISCORD_CONTROL_CHANNEL_ID", "channel-1");
+    vi.stubEnv("DISCORD_OPERATOR_USER_ID", "operator-1");
+
+    const interaction = createSlashInteraction({
+      commandName: "stopproject",
+      userId: "intruder-1",
+    });
+
+    const result = await handleDiscordSlashCommandInteraction(interaction, "/tmp/does-not-matter");
+
+    expect(interaction.reply).toHaveBeenCalledWith({
+      content: "You are not authorized to control this Evolvo runtime.",
+      flags: MessageFlags.Ephemeral,
+    });
+    expect(interaction.deferReply).not.toHaveBeenCalled();
+    expect(result).toBeNull();
+  });
+
+  it("rejects slash commands from the wrong Discord channel", async () => {
+    vi.stubEnv("DISCORD_BOT_TOKEN", "bot-token");
+    vi.stubEnv("DISCORD_CONTROL_GUILD_ID", "guild-1");
+    vi.stubEnv("DISCORD_CONTROL_CHANNEL_ID", "channel-1");
+    vi.stubEnv("DISCORD_OPERATOR_USER_ID", "operator-1");
+
+    const interaction = createSlashInteraction({
+      commandName: "startproject",
+      channelId: "other-channel",
+      values: {
+        name: "Habit CLI",
+      },
+    });
+
+    const result = await handleDiscordSlashCommandInteraction(interaction, "/tmp/does-not-matter");
+
+    expect(interaction.reply).toHaveBeenCalledWith({
+      content: "Use these commands in <#channel-1>.",
+      flags: MessageFlags.Ephemeral,
+    });
+    expect(interaction.deferReply).not.toHaveBeenCalled();
+    expect(result).toBeNull();
+  });
+
+  it("handles an authorized /startproject slash command and forwards the normalized project request", async () => {
+    const workDir = await createTempWorkDir();
+    tempDirs.push(workDir);
+    vi.stubEnv("DISCORD_BOT_TOKEN", "bot-token");
+    vi.stubEnv("DISCORD_CONTROL_GUILD_ID", "guild-1");
+    vi.stubEnv("DISCORD_CONTROL_CHANNEL_ID", "channel-1");
+    vi.stubEnv("DISCORD_OPERATOR_USER_ID", "operator-1");
+
+    const onStartProject = vi.fn().mockResolvedValue({
+      ok: true,
+      action: "created",
+      message: "Created provisioning issue #555 for project `habit-cli`.",
+      project: {
+        displayName: "Habit CLI",
+        slug: "habit-cli",
+        repositoryName: "habit-cli",
+        workspacePath: "projects/habit-cli",
+        status: "provisioning",
+      },
+      trackerIssue: {
+        number: 555,
+        url: "https://github.com/evolvo-auto/evolvo-ts/issues/555",
+        alreadyOpen: false,
+      },
+    });
+    const interaction = createSlashInteraction({
+      id: "slash-start-1",
+      commandName: "startproject",
+      values: {
+        name: "Habit CLI",
+      },
+    });
+
+    const result = await handleDiscordSlashCommandInteraction(interaction, workDir, { onStartProject });
+
+    expect(onStartProject).toHaveBeenCalledWith({
+      messageId: "slash-start-1",
+      requestedAt: expect.any(String),
+      requestedBy: "discord:operator-1",
+      displayName: "Habit CLI",
+      slug: "habit-cli",
+      repositoryName: "habit-cli",
+      issueLabel: "project:habit-cli",
+      workspaceRelativePath: "projects/habit-cli",
+    });
+    expect(interaction.editReply).toHaveBeenCalledWith({
+      content: [
+        "<@operator-1> Created new project for `Habit CLI`.",
+        "Created provisioning issue #555 for project `habit-cli`.",
+        "Tracker issue: #555 (https://github.com/evolvo-auto/evolvo-ts/issues/555)",
+        "Planned label: `project:habit-cli`",
+        "Planned repository: `habit-cli`",
+        "Planned workspace: `projects/habit-cli`",
+      ].join("\n"),
+    });
+    expect(result).toEqual({
+      gracefulShutdownRequest: null,
+      replyContent: [
+        "<@operator-1> Created new project for `Habit CLI`.",
+        "Created provisioning issue #555 for project `habit-cli`.",
+        "Tracker issue: #555 (https://github.com/evolvo-auto/evolvo-ts/issues/555)",
+        "Planned label: `project:habit-cli`",
+        "Planned repository: `habit-cli`",
+        "Planned workspace: `projects/habit-cli`",
+      ].join("\n"),
+    });
+  });
+
+  it("handles an authorized /stopproject slash command", async () => {
+    const workDir = await createTempWorkDir();
+    tempDirs.push(workDir);
+    vi.stubEnv("DISCORD_BOT_TOKEN", "bot-token");
+    vi.stubEnv("DISCORD_CONTROL_GUILD_ID", "guild-1");
+    vi.stubEnv("DISCORD_CONTROL_CHANNEL_ID", "channel-1");
+    vi.stubEnv("DISCORD_OPERATOR_USER_ID", "operator-1");
+
+    const onStopProject = vi.fn().mockResolvedValue({
+      ok: true,
+      action: "stopped",
+      message: "Project `habit-cli` will not be selected again until `startProject <project-name>` is used.",
+      project: {
+        displayName: "Habit CLI",
+        slug: "habit-cli",
+      },
+    });
+    const interaction = createSlashInteraction({
+      id: "slash-stop-1",
+      commandName: "stopproject",
+    });
+
+    const result = await handleDiscordSlashCommandInteraction(interaction, workDir, { onStopProject });
+
+    expect(onStopProject).toHaveBeenCalledWith({
+      messageId: "slash-stop-1",
+      requestedAt: expect.any(String),
+      requestedBy: "discord:operator-1",
+    });
+    expect(interaction.editReply).toHaveBeenCalledWith({
+      content: [
+        "<@operator-1> Stopped current project `Habit CLI`.",
+        "Project `habit-cli` will not be selected again until `startProject <project-name>` is used.",
+        "Runtime remains online and is waiting for further operator commands.",
+      ].join("\n"),
+    });
+    expect(result).toEqual({
+      replyContent: [
+        "<@operator-1> Stopped current project `Habit CLI`.",
+        "Project `habit-cli` will not be selected again until `startProject <project-name>` is used.",
+        "Runtime remains online and is waiting for further operator commands.",
+      ].join("\n"),
+    });
   });
 
   it("returns null when Discord API fails and logs a Missing Access hint", async () => {

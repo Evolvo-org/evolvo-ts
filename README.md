@@ -40,7 +40,13 @@ When configured, if Evolvo reaches its cycle limit it posts a control prompt in 
 - `continue` -> extend cycle budget by `DISCORD_CYCLE_EXTENSION`
 - `quit` -> exit cleanly
 
-Outside the cycle-limit prompt, Discord operator control is explicit plain-text message polling, not Discord slash commands. Send normal channel messages such as:
+Outside the cycle-limit prompt, the live bot session now registers guild slash commands in the configured Discord server:
+
+- `/quit mode:after-current-task|after-tasks`
+- `/startproject name:<project-name>`
+- `/stopproject`
+
+Plain-text channel messages remain available as a fallback in the control channel:
 
 - `quit after current task`
 - `quit after tasks`

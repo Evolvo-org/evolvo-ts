@@ -1,4 +1,13 @@
 import {
+  ApplicationCommandOptionType,
+  Client,
+  Events,
+  GatewayIntentBits,
+  MessageFlags,
+  type ChatInputCommandInteraction,
+  type RESTPostAPIChatInputApplicationCommandsJSONBody,
+} from "discord.js";
+import {
   recordDiscordControlCommandReceipt,
   recordGracefulShutdownRequest,
   readDiscordControlCursorState,
@@ -153,6 +162,23 @@ type DiscordControlMessage = {
   content: string;
   author?: { id?: string };
 };
+
+type DiscordSlashCommandName = "quit" | "startproject" | "stopproject";
+
+type DiscordSlashCommandResult = {
+  gracefulShutdownRequest: GracefulShutdownRequest | null;
+  replyContent: string;
+};
+
+type DiscordSlashCommandStopResult = {
+  replyContent: string;
+};
+
+const DISCORD_SLASH_COMMAND_NAMES = {
+  quit: "quit",
+  startProject: "startproject",
+  stopProject: "stopproject",
+} satisfies Record<string, DiscordSlashCommandName>;
 
 function getRequiredTrimmedEnv(name: string, env: NodeJS.ProcessEnv): string | null {
   const value = env[name]?.trim();
@@ -331,19 +357,22 @@ async function sendCycleLimitPrompt(
   });
 }
 
-async function sendStartupBootMessage(config: DiscordControlConfig): Promise<void> {
+function buildStartupBootMessageContent(): string {
   const startedAt = new Date().toISOString();
-  const content = [
+  return [
     "🤖 Evolvo runtime booted.",
-    "Operator control is online in plain-text mode.",
-    "Send `quit after current task`, `quit after tasks`, `startProject <project-name>`, or `stopProject` as normal channel messages.",
+    "Operator control is online in plain-text mode, and the live bot session will register slash commands when it connects.",
+    "Slash commands: `/quit`, `/startproject`, `/stopproject`.",
+    "Plain-text fallback: `quit after current task`, `quit after tasks`, `startProject <project-name>`, `stopProject`.",
     "When Evolvo posts a cycle-limit prompt, reply with `continue` or `quit`.",
     `Started at: ${startedAt}`,
   ].join("\n");
+}
 
+async function sendStartupBootMessage(config: DiscordControlConfig): Promise<void> {
   await fetchDiscordJson<{ id: string }>(config, `/channels/${config.controlChannelId}/messages`, {
     method: "POST",
-    body: JSON.stringify({ content }),
+    body: JSON.stringify({ content: buildStartupBootMessageContent() }),
   });
 }
 
@@ -415,6 +444,26 @@ function buildGracefulShutdownBehaviorLine(request: GracefulShutdownRequest): st
     : "Evolvo will finish the current task and then stop before starting another issue.";
 }
 
+function buildGracefulShutdownAcknowledgementContent(
+  operatorUserId: string,
+  request: GracefulShutdownRequest,
+  options: {
+    created: boolean;
+    requestedCommand: GracefulShutdownRequest["command"];
+  },
+): string {
+  const confirmationLine = options.created
+    ? `<@${operatorUserId}> Confirmed: \`${request.command}\` is now active.`
+    : request.command === options.requestedCommand
+      ? `<@${operatorUserId}> Confirmed: \`${request.command}\` was already active.`
+      : `<@${operatorUserId}> Confirmed: \`${request.command}\` was already active, so the new command did not change the shutdown plan.`;
+
+  return [
+    confirmationLine,
+    buildGracefulShutdownBehaviorLine(request),
+  ].join("\n");
+}
+
 async function sendGracefulShutdownAcknowledgement(
   config: DiscordControlConfig,
   request: GracefulShutdownRequest,
@@ -423,36 +472,28 @@ async function sendGracefulShutdownAcknowledgement(
     requestedCommand: GracefulShutdownRequest["command"];
   },
 ): Promise<void> {
-  const confirmationLine = options.created
-    ? `<@${config.operatorUserId}> Confirmed: \`${request.command}\` is now active.`
-    : request.command === options.requestedCommand
-      ? `<@${config.operatorUserId}> Confirmed: \`${request.command}\` was already active.`
-      : `<@${config.operatorUserId}> Confirmed: \`${request.command}\` was already active, so the new command did not change the shutdown plan.`;
-  const content = [
-    confirmationLine,
-    buildGracefulShutdownBehaviorLine(request),
-  ].join("\n");
-
   await fetchDiscordJson<{ id: string }>(config, `/channels/${config.controlChannelId}/messages`, {
     method: "POST",
-    body: JSON.stringify({ content }),
+    body: JSON.stringify({
+      content: buildGracefulShutdownAcknowledgementContent(config.operatorUserId, request, options),
+    }),
   });
 }
 
-async function sendStartProjectAcknowledgement(
-  config: DiscordControlConfig,
+function buildStartProjectAcknowledgementContent(
+  operatorUserId: string,
   request: StartProjectCommandRequest,
   result: StartProjectCommandResult,
-): Promise<void> {
-  const content = !result.ok
+): string {
+  return !result.ok
     ? [
-      `<@${config.operatorUserId}> Could not queue project start request for \`${request.displayName}\`.`,
+      `<@${operatorUserId}> Could not queue project start request for \`${request.displayName}\`.`,
       result.message,
       "Usage: `startProject <project-name>`",
     ].join("\n")
     : result.action === "created"
       ? [
-        `<@${config.operatorUserId}> ${result.trackerIssue.alreadyOpen ? "Project creation is already queued" : "Created new project"} for \`${result.project.displayName}\`.`,
+        `<@${operatorUserId}> ${result.trackerIssue.alreadyOpen ? "Project creation is already queued" : "Created new project"} for \`${result.project.displayName}\`.`,
         result.message,
         `Tracker issue: #${result.trackerIssue.number} (${result.trackerIssue.url})`,
         `Planned label: \`project:${result.project.slug}\``,
@@ -460,7 +501,7 @@ async function sendStartProjectAcknowledgement(
         `Planned workspace: \`${result.project.workspacePath}\``,
       ].join("\n")
       : [
-        `<@${config.operatorUserId}> Resumed existing project \`${result.project.displayName}\`.`,
+        `<@${operatorUserId}> Resumed existing project \`${result.project.displayName}\`.`,
         result.message,
         `Registry status: \`${result.project.status}\``,
         `Execution repository: ${result.project.repositoryUrl}`,
@@ -469,44 +510,59 @@ async function sendStartProjectAcknowledgement(
           ? [`Recovery issue: #${result.trackerIssue.number} (${result.trackerIssue.url})`]
           : []),
       ].join("\n");
+}
 
+async function sendStartProjectAcknowledgement(
+  config: DiscordControlConfig,
+  request: StartProjectCommandRequest,
+  result: StartProjectCommandResult,
+): Promise<void> {
   await fetchDiscordJson<{ id: string }>(config, `/channels/${config.controlChannelId}/messages`, {
     method: "POST",
-    body: JSON.stringify({ content }),
+    body: JSON.stringify({
+      content: buildStartProjectAcknowledgementContent(config.operatorUserId, request, result),
+    }),
   });
+}
+
+function buildStopProjectAcknowledgementContent(
+  operatorUserId: string,
+  result: StopProjectCommandResult,
+): string {
+  return !result.ok
+    ? [
+      `<@${operatorUserId}> Could not stop the current project.`,
+      result.message,
+      "Usage: `stopProject`",
+    ].join("\n")
+    : result.action === "stopped"
+      ? [
+        `<@${operatorUserId}> Stopped current project \`${result.project?.displayName ?? result.project?.slug ?? "unknown"}\`.`,
+        result.message,
+        "Runtime remains online and is waiting for further operator commands.",
+      ].join("\n")
+      : result.action === "already-stopped"
+        ? [
+          `<@${operatorUserId}> Project \`${result.project?.displayName ?? result.project?.slug ?? "unknown"}\` is already stopped.`,
+          result.message,
+          "Runtime remains online and is waiting for further operator commands.",
+        ].join("\n")
+        : [
+          `<@${operatorUserId}> No active project is currently selected.`,
+          result.message,
+          "Runtime remains online and is waiting for further operator commands.",
+        ].join("\n");
 }
 
 async function sendStopProjectAcknowledgement(
   config: DiscordControlConfig,
   result: StopProjectCommandResult,
 ): Promise<void> {
-  const content = !result.ok
-    ? [
-      `<@${config.operatorUserId}> Could not stop the current project.`,
-      result.message,
-      "Usage: `stopProject`",
-    ].join("\n")
-    : result.action === "stopped"
-      ? [
-        `<@${config.operatorUserId}> Stopped current project \`${result.project?.displayName ?? result.project?.slug ?? "unknown"}\`.`,
-        result.message,
-        "Runtime remains online and is waiting for further operator commands.",
-      ].join("\n")
-      : result.action === "already-stopped"
-        ? [
-          `<@${config.operatorUserId}> Project \`${result.project?.displayName ?? result.project?.slug ?? "unknown"}\` is already stopped.`,
-          result.message,
-          "Runtime remains online and is waiting for further operator commands.",
-        ].join("\n")
-        : [
-          `<@${config.operatorUserId}> No active project is currently selected.`,
-          result.message,
-          "Runtime remains online and is waiting for further operator commands.",
-        ].join("\n");
-
   await fetchDiscordJson<{ id: string }>(config, `/channels/${config.controlChannelId}/messages`, {
     method: "POST",
-    body: JSON.stringify({ content }),
+    body: JSON.stringify({
+      content: buildStopProjectAcknowledgementContent(config.operatorUserId, result),
+    }),
   });
 }
 
@@ -544,6 +600,302 @@ async function sendRuntimeQuitNotification(
     method: "POST",
     body: JSON.stringify({ content }),
   });
+}
+
+function buildDiscordSlashCommandDefinitions(): RESTPostAPIChatInputApplicationCommandsJSONBody[] {
+  return [
+    {
+      name: DISCORD_SLASH_COMMAND_NAMES.quit,
+      description: "Request a graceful Evolvo shutdown",
+      options: [
+        {
+          type: ApplicationCommandOptionType.String,
+          name: "mode",
+          description: "When Evolvo should stop",
+          required: true,
+          choices: [
+            {
+              name: "After current task",
+              value: "after-current-task",
+            },
+            {
+              name: "After current queue",
+              value: "after-tasks",
+            },
+          ],
+        },
+      ],
+    },
+    {
+      name: DISCORD_SLASH_COMMAND_NAMES.startProject,
+      description: "Create or resume a project by name",
+      options: [
+        {
+          type: ApplicationCommandOptionType.String,
+          name: "name",
+          description: "Project name",
+          required: true,
+        },
+      ],
+    },
+    {
+      name: DISCORD_SLASH_COMMAND_NAMES.stopProject,
+      description: "Stop the currently active project",
+    },
+  ];
+}
+
+async function registerDiscordSlashCommands(
+  client: Client<true>,
+  config: DiscordControlConfig,
+): Promise<void> {
+  const application = client.application;
+  if (!application) {
+    throw new Error("Discord slash command registration requires an active client application.");
+  }
+
+  await application.commands.set(buildDiscordSlashCommandDefinitions(), config.guildId);
+}
+
+function buildWrongChannelInteractionMessage(config: DiscordControlConfig): string {
+  return `Use these commands in <#${config.controlChannelId}>.`;
+}
+
+function buildUnauthorizedInteractionMessage(): string {
+  return "You are not authorized to control this Evolvo runtime.";
+}
+
+function buildDuplicateInteractionMessage(): string {
+  return "This Discord command was already processed.";
+}
+
+async function processGracefulShutdownControlCommand(
+  workDir: string,
+  messageId: string,
+  mode: GracefulShutdownMode,
+): Promise<{
+  request: GracefulShutdownRequest;
+  created: boolean;
+}> {
+  return recordGracefulShutdownRequest(workDir, {
+    messageId,
+    mode,
+  });
+}
+
+async function processStartProjectControlCommand(
+  workDir: string,
+  messageId: string,
+  requestedProjectName: string,
+  requestedBy: string,
+  handlers: DiscordControlHandlers,
+): Promise<{ request: StartProjectCommandRequest; result: StartProjectCommandResult; duplicate: boolean }> {
+  const recordedReceipt = await recordDiscordControlCommandReceipt(workDir, {
+    command: "start-project",
+    messageId,
+  });
+
+  if (!recordedReceipt) {
+    return {
+      duplicate: true,
+      request: {
+        messageId,
+        requestedAt: new Date().toISOString(),
+        requestedBy,
+        displayName: requestedProjectName.trim() || "<missing project name>",
+        slug: "",
+        repositoryName: "",
+        issueLabel: "",
+        workspaceRelativePath: "",
+      },
+      result: {
+        ok: false,
+        message: buildDuplicateInteractionMessage(),
+      },
+    };
+  }
+
+  let startProjectRequest: StartProjectCommandRequest | null = null;
+  let commandResult: StartProjectCommandResult;
+
+  try {
+    const normalized = normalizeProjectNameInput(requestedProjectName);
+    startProjectRequest = {
+      messageId,
+      requestedAt: new Date().toISOString(),
+      requestedBy,
+      displayName: normalized.displayName,
+      slug: normalized.slug,
+      repositoryName: normalized.repositoryName,
+      issueLabel: normalized.issueLabel,
+      workspaceRelativePath: normalized.workspaceRelativePath,
+    };
+
+    if (!handlers.onStartProject) {
+      throw new Error("Project start commands are not available in this runtime.");
+    }
+
+    commandResult = await handlers.onStartProject(startProjectRequest);
+  } catch (error) {
+    const fallbackDisplayName = requestedProjectName.trim() || "<missing project name>";
+    startProjectRequest = {
+      messageId,
+      requestedAt: new Date().toISOString(),
+      requestedBy,
+      displayName: fallbackDisplayName,
+      slug: "",
+      repositoryName: "",
+      issueLabel: "",
+      workspaceRelativePath: "",
+    };
+    commandResult = {
+      ok: false,
+      message: error instanceof Error ? error.message : "Unknown project start request error.",
+    };
+  }
+
+  return {
+    duplicate: false,
+    request: startProjectRequest,
+    result: commandResult,
+  };
+}
+
+async function processStopProjectControlCommand(
+  workDir: string,
+  messageId: string,
+  requestedBy: string,
+  handlers: DiscordControlHandlers,
+): Promise<{ result: StopProjectCommandResult; duplicate: boolean }> {
+  const recordedReceipt = await recordDiscordControlCommandReceipt(workDir, {
+    command: "stop-project",
+    messageId,
+  });
+
+  if (!recordedReceipt) {
+    return {
+      duplicate: true,
+      result: {
+        ok: false,
+        message: buildDuplicateInteractionMessage(),
+      },
+    };
+  }
+
+  try {
+    if (!handlers.onStopProject) {
+      throw new Error("Project stop commands are not available in this runtime.");
+    }
+
+    return {
+      duplicate: false,
+      result: await handlers.onStopProject({
+        messageId,
+        requestedAt: new Date().toISOString(),
+        requestedBy,
+      }),
+    };
+  } catch (error) {
+    return {
+      duplicate: false,
+      result: {
+        ok: false,
+        message: error instanceof Error ? error.message : "Unknown project stop request error.",
+      },
+    };
+  }
+}
+
+function getSlashCommandName(interaction: ChatInputCommandInteraction): DiscordSlashCommandName | null {
+  if (
+    interaction.commandName === DISCORD_SLASH_COMMAND_NAMES.quit
+    || interaction.commandName === DISCORD_SLASH_COMMAND_NAMES.startProject
+    || interaction.commandName === DISCORD_SLASH_COMMAND_NAMES.stopProject
+  ) {
+    return interaction.commandName;
+  }
+
+  return null;
+}
+
+export async function handleDiscordSlashCommandInteraction(
+  interaction: ChatInputCommandInteraction,
+  workDir: string,
+  handlers: DiscordControlHandlers = {},
+  config: DiscordControlConfig = getDiscordControlConfigFromEnv() ?? (() => {
+    throw new Error("Discord operator control is not configured.");
+  })(),
+): Promise<DiscordSlashCommandResult | DiscordSlashCommandStopResult | null> {
+  const commandName = getSlashCommandName(interaction);
+  if (commandName === null) {
+    return null;
+  }
+
+  if (interaction.guildId !== config.guildId || interaction.channelId !== config.controlChannelId) {
+    await interaction.reply({
+      content: buildWrongChannelInteractionMessage(config),
+      flags: MessageFlags.Ephemeral,
+    });
+    return null;
+  }
+
+  if (interaction.user.id !== config.operatorUserId) {
+    await interaction.reply({
+      content: buildUnauthorizedInteractionMessage(),
+      flags: MessageFlags.Ephemeral,
+    });
+    return null;
+  }
+
+  await interaction.deferReply();
+
+  if (commandName === DISCORD_SLASH_COMMAND_NAMES.quit) {
+    const mode = interaction.options.getString("mode", true) as GracefulShutdownMode;
+    const requestedCommand = mode === "after-tasks" ? "quit after tasks" : "quit after current task";
+    const recordedRequest = await processGracefulShutdownControlCommand(workDir, interaction.id, mode);
+    const replyContent = buildGracefulShutdownAcknowledgementContent(config.operatorUserId, recordedRequest.request, {
+      created: recordedRequest.created,
+      requestedCommand,
+    });
+    await interaction.editReply({ content: replyContent });
+    return {
+      gracefulShutdownRequest: recordedRequest.request,
+      replyContent,
+    };
+  }
+
+  if (commandName === DISCORD_SLASH_COMMAND_NAMES.startProject) {
+    const requestedProjectName = interaction.options.getString("name", true);
+    const processed = await processStartProjectControlCommand(
+      workDir,
+      interaction.id,
+      requestedProjectName,
+      `discord:${interaction.user.id}`,
+      handlers,
+    );
+    const replyContent = processed.duplicate
+      ? buildDuplicateInteractionMessage()
+      : buildStartProjectAcknowledgementContent(config.operatorUserId, processed.request, processed.result);
+    await interaction.editReply({ content: replyContent });
+    return {
+      gracefulShutdownRequest: null,
+      replyContent,
+    };
+  }
+
+  const processed = await processStopProjectControlCommand(
+    workDir,
+    interaction.id,
+    `discord:${interaction.user.id}`,
+    handlers,
+  );
+  const replyContent = processed.duplicate
+    ? buildDuplicateInteractionMessage()
+    : buildStopProjectAcknowledgementContent(config.operatorUserId, processed.result);
+  await interaction.editReply({ content: replyContent });
+  return {
+    replyContent,
+  };
 }
 
 function getHighestSnowflakeId(ids: string[]): string {
@@ -754,10 +1106,7 @@ export async function pollDiscordGracefulShutdownCommand(
 
       const shutdownCommand = parseGracefulShutdownCommand(message.content);
       if (shutdownCommand !== null) {
-        const recordedRequest = await recordGracefulShutdownRequest(workDir, {
-          messageId: message.id,
-          mode: shutdownCommand.mode,
-        });
+        const recordedRequest = await processGracefulShutdownControlCommand(workDir, message.id, shutdownCommand.mode);
         gracefulShutdownRequest = recordedRequest.request;
         try {
           await sendGracefulShutdownAcknowledgement(config, recordedRequest.request, {
@@ -774,32 +1123,23 @@ export async function pollDiscordGracefulShutdownCommand(
 
       const stopProjectCommandSuffix = parseStopProjectCommand(message.content);
       if (stopProjectCommandSuffix !== null && handlers.onStopProject) {
-        const recordedReceipt = await recordDiscordControlCommandReceipt(workDir, {
-          command: "stop-project",
-          messageId: message.id,
-        });
-        if (recordedReceipt) {
-          let commandResult: StopProjectCommandResult;
-
-          try {
-            if (stopProjectCommandSuffix.length > 0) {
-              throw new Error("`stopProject` does not take any arguments.");
-            }
-
-            commandResult = await handlers.onStopProject({
-              messageId: message.id,
-              requestedAt: new Date().toISOString(),
-              requestedBy: `discord:${config.operatorUserId}`,
-            });
-          } catch (error) {
-            commandResult = {
+        const processed = stopProjectCommandSuffix.length > 0
+          ? {
+            duplicate: false,
+            result: {
               ok: false,
-              message: error instanceof Error ? error.message : "Unknown project stop request error.",
-            };
+              message: "`stopProject` does not take any arguments.",
+            } satisfies StopProjectCommandResult,
           }
-
+          : await processStopProjectControlCommand(
+            workDir,
+            message.id,
+            `discord:${config.operatorUserId}`,
+            handlers,
+          );
+        if (!processed.duplicate) {
           try {
-            await sendStopProjectAcknowledgement(config, commandResult);
+            await sendStopProjectAcknowledgement(config, processed.result);
           } catch (error) {
             const sendMessage = buildStepFailureMessage("send-stop-project-ack", error);
             console.error(`Discord project stop acknowledgement failed: ${sendMessage}`);
@@ -812,47 +1152,16 @@ export async function pollDiscordGracefulShutdownCommand(
 
       const requestedProjectName = parseStartProjectName(message.content);
       if (requestedProjectName !== null && handlers.onStartProject) {
-        const recordedReceipt = await recordDiscordControlCommandReceipt(workDir, {
-          command: "start-project",
-          messageId: message.id,
-        });
-        if (recordedReceipt) {
-          let startProjectRequest: StartProjectCommandRequest | null = null;
-          let commandResult: StartProjectCommandResult;
-
+        const processed = await processStartProjectControlCommand(
+          workDir,
+          message.id,
+          requestedProjectName,
+          `discord:${config.operatorUserId}`,
+          handlers,
+        );
+        if (!processed.duplicate) {
           try {
-            const normalized = normalizeProjectNameInput(requestedProjectName);
-            startProjectRequest = {
-              messageId: message.id,
-              requestedAt: new Date().toISOString(),
-              requestedBy: `discord:${config.operatorUserId}`,
-              displayName: normalized.displayName,
-              slug: normalized.slug,
-              repositoryName: normalized.repositoryName,
-              issueLabel: normalized.issueLabel,
-              workspaceRelativePath: normalized.workspaceRelativePath,
-            };
-            commandResult = await handlers.onStartProject(startProjectRequest);
-          } catch (error) {
-            const fallbackDisplayName = requestedProjectName.trim() || "<missing project name>";
-            startProjectRequest = {
-              messageId: message.id,
-              requestedAt: new Date().toISOString(),
-              requestedBy: `discord:${config.operatorUserId}`,
-              displayName: fallbackDisplayName,
-              slug: "",
-              repositoryName: "",
-              issueLabel: "",
-              workspaceRelativePath: "",
-            };
-            commandResult = {
-              ok: false,
-              message: error instanceof Error ? error.message : "Unknown project start request error.",
-            };
-          }
-
-          try {
-            await sendStartProjectAcknowledgement(config, startProjectRequest, commandResult);
+            await sendStartProjectAcknowledgement(config, processed.request, processed.result);
           } catch (error) {
             const sendMessage = buildStepFailureMessage("send-start-project-ack", error);
             console.error(`Discord project start acknowledgement failed: ${sendMessage}`);
@@ -877,6 +1186,65 @@ export type DiscordGracefulShutdownListener = {
   stop: () => Promise<void>;
 };
 
+async function startDiscordSlashCommandListener(
+  config: DiscordControlConfig,
+  workDir: string,
+  handlers: DiscordControlHandlers,
+): Promise<Client<true> | null> {
+  const client = new Client({
+    intents: [GatewayIntentBits.Guilds],
+  });
+
+  client.on(Events.Error, (error) => {
+    console.error(`Discord slash command client error: ${error.message}`);
+  });
+
+  client.on(Events.InteractionCreate, (interaction) => {
+    if (!interaction.isChatInputCommand()) {
+      return;
+    }
+
+    void handleDiscordSlashCommandInteraction(interaction, workDir, handlers, config).catch((error: unknown) => {
+      const message = error instanceof Error ? error.message : "unknown error";
+      console.error(`Discord slash command handling failed: ${message}`);
+
+      if (interaction.replied || interaction.deferred) {
+        void interaction.editReply({ content: "Discord command handling failed unexpectedly." }).catch(() => undefined);
+        return;
+      }
+
+      void interaction.reply({
+        content: "Discord command handling failed unexpectedly.",
+        flags: MessageFlags.Ephemeral,
+      }).catch(() => undefined);
+    });
+  });
+
+  client.once(Events.ClientReady, (readyClient) => {
+    void registerDiscordSlashCommands(readyClient, config)
+      .then(() => {
+        console.log(
+          `Discord slash commands registered in guild ${config.guildId}: /${DISCORD_SLASH_COMMAND_NAMES.quit}, /${DISCORD_SLASH_COMMAND_NAMES.startProject}, /${DISCORD_SLASH_COMMAND_NAMES.stopProject}.`,
+        );
+      })
+      .catch((error: unknown) => {
+        const message = error instanceof Error ? error.message : "unknown error";
+        console.error(`Discord slash command registration failed: ${message}`);
+      });
+  });
+
+  try {
+    await client.login(config.botToken);
+    console.log("Discord slash command gateway client connected.");
+    return client as Client<true>;
+  } catch (error) {
+    client.destroy();
+    const message = error instanceof Error ? error.message : "unknown error";
+    console.error(`Discord slash command listener startup failed: ${message}`);
+    return null;
+  }
+}
+
 export async function startDiscordGracefulShutdownListener(
   workDir: string,
   handlers: DiscordControlHandlers = {},
@@ -894,6 +1262,7 @@ export async function startDiscordGracefulShutdownListener(
     logDiscordMissingAccessHint(message);
   }
 
+  const slashCommandClient = await startDiscordSlashCommandListener(config, workDir, handlers);
   let stopped = false;
   let pendingPoll: Promise<void> | null = null;
   let timer: NodeJS.Timeout | null = null;
@@ -926,6 +1295,7 @@ export async function startDiscordGracefulShutdownListener(
       if (pendingPoll !== null) {
         await pendingPoll;
       }
+      slashCommandClient?.destroy();
     },
   };
 }
