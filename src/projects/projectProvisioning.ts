@@ -1,5 +1,4 @@
-import { mkdir } from "node:fs/promises";
-import { resolve } from "node:path";
+import { mkdir, stat } from "node:fs/promises";
 import {
   buildProjectProvisioningIssueBody,
   buildProjectProvisioningIssueTitle,
@@ -9,7 +8,10 @@ import {
 } from "../issues/projectProvisioningIssue.js";
 import type { IssueSummary, TaskIssueManager } from "../issues/taskIssueManager.js";
 import { setActiveProjectState } from "./activeProjectState.js";
-import { normalizeProjectNameInput } from "./projectNaming.js";
+import {
+  normalizeProjectNameInput,
+  resolveManagedProjectWorkspacePath,
+} from "./projectNaming.js";
 import {
   findProjectBySlug,
   readProjectRegistry,
@@ -99,6 +101,7 @@ export type ProjectProvisioningExecutionResult = {
   metadata: ProjectProvisioningIssueMetadata;
   record: ProjectRecord;
   failureStep: "registry" | "label" | "repository" | "workspace" | "active-project" | null;
+  workspaceAction: "created" | "reused" | null;
   message: string;
 };
 
@@ -118,10 +121,45 @@ function buildDefaultProjectContext(workDir: string, owner: string, repo: string
   };
 }
 
+function canonicalizeProjectProvisioningMetadata(
+  metadata: ProjectProvisioningIssueMetadata,
+  workspaceRoot?: string,
+): ProjectProvisioningIssueMetadata {
+  return {
+    ...metadata,
+    workspacePath: resolveManagedProjectWorkspacePath(metadata.slug, workspaceRoot),
+  };
+}
+
+async function ensureManagedProjectWorkspaceDirectory(workspacePath: string): Promise<{
+  workspacePath: string;
+  workspaceAction: "created" | "reused";
+}> {
+  let workspaceAction: "created" | "reused" = "created";
+
+  try {
+    const currentPath = await stat(workspacePath);
+    if (!currentPath.isDirectory()) {
+      throw new Error(`Managed project workspace path ${workspacePath} exists but is not a directory.`);
+    }
+    workspaceAction = "reused";
+  } catch (error) {
+    const errorCode = (error as NodeJS.ErrnoException).code;
+    if (errorCode !== "ENOENT") {
+      throw error;
+    }
+  }
+
+  await mkdir(workspacePath, { recursive: true });
+  return {
+    workspacePath,
+    workspaceAction,
+  };
+}
+
 function buildManagedProjectRecord(
   metadata: ProjectProvisioningIssueMetadata,
   options: {
-    workDir: string;
     trackerOwner: string;
     trackerRepo: string;
     issueNumber: number;
@@ -129,7 +167,6 @@ function buildManagedProjectRecord(
   },
   existing: ProjectRecord | null,
 ): ProjectRecord {
-  const workspacePath = resolve(options.workDir, metadata.workspaceRelativePath);
   const createdAt = existing?.createdAt ?? options.now;
 
   return {
@@ -148,7 +185,7 @@ function buildManagedProjectRecord(
       url: existing?.executionRepo.url ?? buildRepositoryUrl(metadata.owner, metadata.repositoryName),
       defaultBranch: existing?.executionRepo.defaultBranch ?? null,
     },
-    cwd: existing?.cwd ?? workspacePath,
+    cwd: metadata.workspacePath,
     status: existing?.status ?? "provisioning",
     sourceIssueNumber: options.issueNumber,
     createdAt,
@@ -185,7 +222,7 @@ function buildProjectProvisioningMetadata(options: {
     slug: options.normalizedProject.slug,
     repositoryName: options.normalizedProject.repositoryName,
     issueLabel: options.normalizedProject.issueLabel,
-    workspaceRelativePath: options.normalizedProject.workspaceRelativePath,
+    workspacePath: options.normalizedProject.workspacePath,
     requestedBy: options.requestedBy,
     requestedAt: options.requestedAt?.trim() || new Date().toISOString(),
   };
@@ -203,13 +240,13 @@ function buildCreatedStartProjectResult(options: {
     ok: true,
     action: "created",
     message: options.alreadyOpen
-      ? `Project \`${options.metadata.slug}\` is already queued for provisioning in issue #${options.issueNumber}.`
-      : `Created provisioning issue #${options.issueNumber} for project \`${options.metadata.slug}\`.`,
+      ? `Project \`${options.metadata.slug}\` is already queued for provisioning in issue #${options.issueNumber}. Canonical workspace: \`${options.metadata.workspacePath}\`.`
+      : `Created provisioning issue #${options.issueNumber} for project \`${options.metadata.slug}\`. Canonical workspace: \`${options.metadata.workspacePath}\`.`,
     project: {
       displayName: options.metadata.displayName,
       slug: options.metadata.slug,
       repositoryName: options.metadata.repositoryName,
-      workspacePath: options.metadata.workspaceRelativePath,
+      workspacePath: options.metadata.workspacePath,
       status: "provisioning",
     },
     trackerIssue: {
@@ -217,6 +254,48 @@ function buildCreatedStartProjectResult(options: {
       url: issueUrl,
       alreadyOpen: options.alreadyOpen,
     },
+  };
+}
+
+async function synchronizeManagedProjectWorkspace(options: {
+  workDir: string;
+  defaultProject: DefaultProjectContext;
+  project: ProjectRecord;
+  workspaceRoot?: string;
+}): Promise<{
+  project: ProjectRecord;
+  workspaceAction: "created" | "reused" | null;
+}> {
+  if (options.project.kind !== "managed") {
+    return {
+      project: options.project,
+      workspaceAction: null,
+    };
+  }
+
+  const { workspacePath, workspaceAction } = await ensureManagedProjectWorkspaceDirectory(
+    resolveManagedProjectWorkspacePath(options.project.slug, options.workspaceRoot),
+  );
+  const nextProject: ProjectRecord = {
+    ...options.project,
+    cwd: workspacePath,
+    updatedAt: new Date().toISOString(),
+    provisioning: {
+      ...options.project.provisioning,
+      workspacePrepared: true,
+    },
+  };
+
+  await upsertProjectRecord(options.workDir, options.defaultProject, nextProject);
+  console.log(
+    options.project.status === "active"
+      ? `[project-workspace] resolved ${workspacePath}; ${workspaceAction === "created" ? "created directory" : "reused existing directory"}; ${workspacePath} is now the active working directory for project ${options.project.slug}.`
+      : `[project-workspace] resolved ${workspacePath}; ${workspaceAction === "created" ? "created directory" : "reused existing directory"}; ${workspacePath} is the canonical project workspace for ${options.project.slug}.`,
+  );
+
+  return {
+    project: nextProject,
+    workspaceAction,
   };
 }
 
@@ -253,9 +332,12 @@ export async function createProjectProvisioningRequestIssue(options: {
   projectName: string;
   requestedBy: string;
   requestedAt?: string;
+  workspaceRoot?: string;
 }): Promise<CreateProjectProvisioningRequestResult> {
   try {
-    const normalized = normalizeProjectNameInput(options.projectName);
+    const normalized = normalizeProjectNameInput(options.projectName, {
+      workspaceRoot: options.workspaceRoot,
+    });
     const defaultProject = buildDefaultProjectContext(options.workDir, options.trackerOwner, options.trackerRepo);
     const registry = await readProjectRegistry(options.workDir, defaultProject);
     const existingProject = findProjectBySlug(registry, normalized.slug);
@@ -311,42 +393,57 @@ export async function handleStartProjectCommand(options: {
   projectName: string;
   requestedBy: string;
   requestedAt?: string;
+  workspaceRoot?: string;
 }): Promise<StartProjectCommandHandlingResult> {
   try {
-    const normalized = normalizeProjectNameInput(options.projectName);
+    const normalized = normalizeProjectNameInput(options.projectName, {
+      workspaceRoot: options.workspaceRoot,
+    });
     const defaultProject = buildDefaultProjectContext(options.workDir, options.trackerOwner, options.trackerRepo);
     const registry = await readProjectRegistry(options.workDir, defaultProject);
     const existingProject = findProjectBySlug(registry, normalized.slug);
     const duplicateIssue = await findOpenProvisioningIssueForSlug(options.issueManager, normalized.slug);
 
     if (existingProject && existingProject.status !== "failed") {
+      const synchronizedWorkspace = await synchronizeManagedProjectWorkspace({
+        workDir: options.workDir,
+        defaultProject,
+        project: existingProject,
+        workspaceRoot: options.workspaceRoot,
+      });
       await setActiveProjectState({
         workDir: options.workDir,
-        slug: existingProject.slug,
+        slug: synchronizedWorkspace.project.slug,
         requestedBy: options.requestedBy,
         source: "start-project-command",
         updatedAt: options.requestedAt,
       });
       return buildResumedStartProjectResult(
-        existingProject,
-        existingProject.status === "active"
-          ? `Resumed existing project \`${existingProject.slug}\`.`
-          : `Project \`${existingProject.slug}\` already exists with status \`${existingProject.status}\`; resuming that flow.`,
+        synchronizedWorkspace.project,
+        synchronizedWorkspace.project.status === "active"
+          ? `Resumed existing project \`${synchronizedWorkspace.project.slug}\`. ${synchronizedWorkspace.workspaceAction === "created" ? "Created missing workspace directory" : "Reused existing workspace directory"} \`${synchronizedWorkspace.project.cwd}\`, and that path is now the active working directory.`
+          : `Project \`${synchronizedWorkspace.project.slug}\` already exists with status \`${synchronizedWorkspace.project.status}\`; resuming that flow from canonical workspace \`${synchronizedWorkspace.project.cwd}\`.`,
       );
     }
 
     if (existingProject && existingProject.status === "failed") {
+      const synchronizedWorkspace = await synchronizeManagedProjectWorkspace({
+        workDir: options.workDir,
+        defaultProject,
+        project: existingProject,
+        workspaceRoot: options.workspaceRoot,
+      });
       if (duplicateIssue) {
         await setActiveProjectState({
           workDir: options.workDir,
-          slug: existingProject.slug,
+          slug: synchronizedWorkspace.project.slug,
           requestedBy: options.requestedBy,
           source: "start-project-command",
           updatedAt: options.requestedAt,
         });
         return buildResumedStartProjectResult(
-          existingProject,
-          `Resumed existing project \`${existingProject.slug}\` and kept recovery issue #${duplicateIssue.number} active.`,
+          synchronizedWorkspace.project,
+          `Resumed existing project \`${synchronizedWorkspace.project.slug}\` and kept recovery issue #${duplicateIssue.number} active. Canonical workspace: \`${synchronizedWorkspace.project.cwd}\`.`,
           {
             number: duplicateIssue.number,
             url: buildProjectProvisioningIssueUrl(options.trackerOwner, options.trackerRepo, duplicateIssue.number),
@@ -363,6 +460,7 @@ export async function handleStartProjectCommand(options: {
         projectName: options.projectName,
         requestedBy: options.requestedBy,
         requestedAt: options.requestedAt,
+        workspaceRoot: options.workspaceRoot,
       });
       if (!recoveryRequest.ok) {
         return recoveryRequest;
@@ -370,14 +468,14 @@ export async function handleStartProjectCommand(options: {
 
       await setActiveProjectState({
         workDir: options.workDir,
-        slug: existingProject.slug,
+        slug: synchronizedWorkspace.project.slug,
         requestedBy: options.requestedBy,
         source: "start-project-command",
         updatedAt: options.requestedAt,
       });
       return buildResumedStartProjectResult(
-        existingProject,
-        `Resumed existing project \`${existingProject.slug}\` and queued recovery issue #${recoveryRequest.issueNumber}.`,
+        synchronizedWorkspace.project,
+        `Resumed existing project \`${synchronizedWorkspace.project.slug}\` and queued recovery issue #${recoveryRequest.issueNumber}. Canonical workspace: \`${synchronizedWorkspace.project.cwd}\`.`,
         {
           number: recoveryRequest.issueNumber,
           url: recoveryRequest.issueUrl,
@@ -417,6 +515,7 @@ export async function handleStartProjectCommand(options: {
       projectName: options.projectName,
       requestedBy: options.requestedBy,
       requestedAt: options.requestedAt,
+      workspaceRoot: options.workspaceRoot,
     });
     if (!request.ok) {
       return request;
@@ -450,22 +549,24 @@ export async function executeProjectProvisioningIssue(options: {
   trackerOwner: string;
   trackerRepo: string;
   adminClient: ProjectProvisioningAdminClient;
+  workspaceRoot?: string;
 }): Promise<ProjectProvisioningExecutionResult> {
-  const metadata = parseProjectProvisioningIssueMetadata(options.issue.description);
-  if (!metadata) {
+  const parsedMetadata = parseProjectProvisioningIssueMetadata(options.issue.description);
+  if (!parsedMetadata) {
     throw new Error(`Issue #${options.issue.number} is not a valid project provisioning request.`);
   }
+  const metadata = canonicalizeProjectProvisioningMetadata(parsedMetadata, options.workspaceRoot);
 
   const defaultProject = buildDefaultProjectContext(options.workDir, options.trackerOwner, options.trackerRepo);
   const registry = await readProjectRegistry(options.workDir, defaultProject);
   const existingProject = findProjectBySlug(registry, metadata.slug);
   let record = buildManagedProjectRecord(metadata, {
-    workDir: options.workDir,
     trackerOwner: options.trackerOwner,
     trackerRepo: options.trackerRepo,
     issueNumber: options.issue.number,
     now: new Date().toISOString(),
   }, existingProject);
+  let workspaceAction: "created" | "reused" | null = null;
 
   const persistRecord = async (
     overrides: Partial<ProjectRecord>,
@@ -498,6 +599,7 @@ export async function executeProjectProvisioningIssue(options: {
       metadata,
       record,
       failureStep: "registry",
+      workspaceAction,
       message: error instanceof Error ? error.message : "Unknown project registry error.",
     };
   }
@@ -518,6 +620,7 @@ export async function executeProjectProvisioningIssue(options: {
       metadata,
       record,
       failureStep: "label",
+      workspaceAction,
       message,
     };
   }
@@ -547,16 +650,17 @@ export async function executeProjectProvisioningIssue(options: {
       metadata,
       record,
       failureStep: "repository",
+      workspaceAction,
       message,
     };
   }
 
   try {
-    const workspacePath = resolve(options.workDir, metadata.workspaceRelativePath);
-    await mkdir(workspacePath, { recursive: true });
+    const preparedWorkspace = await ensureManagedProjectWorkspaceDirectory(metadata.workspacePath);
+    workspaceAction = preparedWorkspace.workspaceAction;
     await persistRecord(
       {
-        cwd: workspacePath,
+        cwd: preparedWorkspace.workspacePath,
         status: "active",
       },
       {
@@ -572,6 +676,7 @@ export async function executeProjectProvisioningIssue(options: {
       metadata,
       record,
       failureStep: "workspace",
+      workspaceAction,
       message,
     };
   }
@@ -583,6 +688,9 @@ export async function executeProjectProvisioningIssue(options: {
       requestedBy: metadata.requestedBy,
       source: "project-provisioning",
     });
+    console.log(
+      `[project-workspace] resolved ${record.cwd}; ${workspaceAction === "created" ? "created directory" : "reused existing directory"}; ${record.cwd} is now the active working directory for project ${metadata.slug}.`,
+    );
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown active project state update error.";
     await persistRecord({ status: "failed" }, { lastError: message }).catch(() => undefined);
@@ -591,6 +699,7 @@ export async function executeProjectProvisioningIssue(options: {
       metadata,
       record,
       failureStep: "active-project",
+      workspaceAction,
       message,
     };
   }
@@ -600,6 +709,7 @@ export async function executeProjectProvisioningIssue(options: {
     metadata,
     record,
     failureStep: null,
+    workspaceAction,
     message: `Provisioned project ${metadata.displayName}.`,
   };
 }
@@ -619,7 +729,7 @@ export function buildProjectProvisioningOutcomeComment(
     : "- Repository default branch: not available";
   const workspaceLine = result.record.provisioning.workspacePrepared
     ? `- Local workspace: \`${result.record.cwd}\``
-    : `- Local workspace: pending (\`${result.metadata.workspaceRelativePath}\`)`;
+    : `- Local workspace: pending (\`${result.metadata.workspacePath}\`)`;
 
   const lines = [
     "## Project Provisioning",
@@ -629,6 +739,10 @@ export function buildProjectProvisioningOutcomeComment(
     repositoryLine,
     branchLine,
     workspaceLine,
+    ...(result.workspaceAction === null
+      ? []
+      : [`- Workspace directory: ${result.workspaceAction === "created" ? "created" : "reused existing directory"}.`]),
+    ...(result.ok ? [`- Active working directory: \`${result.record.cwd}\`.`] : []),
     `- Registry status: \`${result.record.status}\``,
   ];
 

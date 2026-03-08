@@ -330,8 +330,8 @@ export async function main(): Promise<void> {
         stoppedProjectIdleLoggedSlug = null;
         console.log(
           result.action === "created"
-            ? `[startProject] created new project flow for ${result.project.displayName} (${result.project.slug}).`
-            : `[startProject] resumed existing project ${result.project.displayName} (${result.project.slug}) with status ${result.project.status}.`,
+            ? `[startProject] created new project flow for ${result.project.displayName} (${result.project.slug}) at ${result.project.workspacePath}.`
+            : `[startProject] resumed existing project ${result.project.displayName} (${result.project.slug}) with status ${result.project.status} at ${result.project.workspacePath}.`,
         );
       } else {
         console.error(`[startProject] failed for ${request.displayName}: ${result.message}`);

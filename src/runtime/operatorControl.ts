@@ -43,7 +43,7 @@ export type StartProjectCommandRequest = {
   slug: string;
   repositoryName: string;
   issueLabel: string;
-  workspaceRelativePath: string;
+  workspacePath: string;
 };
 
 export type StopProjectCommandRequest = {
@@ -863,7 +863,7 @@ async function processStartProjectControlCommand(
         slug: "",
         repositoryName: "",
         issueLabel: "",
-        workspaceRelativePath: "",
+        workspacePath: "",
       },
       result: {
         ok: false,
@@ -885,7 +885,7 @@ async function processStartProjectControlCommand(
       slug: normalized.slug,
       repositoryName: normalized.repositoryName,
       issueLabel: normalized.issueLabel,
-      workspaceRelativePath: normalized.workspaceRelativePath,
+      workspacePath: normalized.workspacePath,
     };
 
     if (!handlers.onStartProject) {
@@ -903,7 +903,7 @@ async function processStartProjectControlCommand(
       slug: "",
       repositoryName: "",
       issueLabel: "",
-      workspaceRelativePath: "",
+      workspacePath: "",
     };
     commandResult = {
       ok: false,

@@ -6,7 +6,7 @@ export type ProjectProvisioningIssueMetadata = {
   slug: string;
   repositoryName: string;
   issueLabel: string;
-  workspaceRelativePath: string;
+  workspacePath: string;
   requestedBy: string;
   requestedAt: string;
 };
@@ -35,7 +35,7 @@ export function buildProjectProvisioningIssueBody(metadata: ProjectProvisioningI
     `slug: ${metadata.slug}`,
     `repo_name: ${metadata.repositoryName}`,
     `issue_label: ${metadata.issueLabel}`,
-    `workspace_relative_path: ${metadata.workspaceRelativePath}`,
+    `workspace_path: ${metadata.workspacePath}`,
     `requested_by: ${metadata.requestedBy}`,
     `requested_at: ${metadata.requestedAt}`,
     "-->",
@@ -43,7 +43,7 @@ export function buildProjectProvisioningIssueBody(metadata: ProjectProvisioningI
     "## Requested Targets",
     `- Tracker label: \`${metadata.issueLabel}\``,
     `- Managed repository: \`${metadata.owner}/${metadata.repositoryName}\``,
-    `- Local workspace: \`${metadata.workspaceRelativePath}\``,
+    `- Local workspace: \`${metadata.workspacePath}\``,
     "",
     "## Execution Notes",
     "- Run provisioning on the default Evolvo workflow.",
@@ -92,8 +92,8 @@ export function parseProjectProvisioningIssueMetadata(
     if (key === "issue_label") {
       metadata.issueLabel = value;
     }
-    if (key === "workspace_relative_path") {
-      metadata.workspaceRelativePath = value;
+    if (key === "workspace_path" || key === "workspace_relative_path") {
+      metadata.workspacePath = value;
     }
     if (key === "requested_by") {
       metadata.requestedBy = value;
@@ -108,7 +108,7 @@ export function parseProjectProvisioningIssueMetadata(
   const slug = normalizeNonEmptyString(metadata.slug);
   const repositoryName = normalizeNonEmptyString(metadata.repositoryName);
   const issueLabel = normalizeNonEmptyString(metadata.issueLabel);
-  const workspaceRelativePath = normalizeNonEmptyString(metadata.workspaceRelativePath);
+  const workspacePath = normalizeNonEmptyString(metadata.workspacePath);
   const requestedBy = normalizeNonEmptyString(metadata.requestedBy);
   const requestedAt = normalizeNonEmptyString(metadata.requestedAt);
 
@@ -118,7 +118,7 @@ export function parseProjectProvisioningIssueMetadata(
     !slug ||
     !repositoryName ||
     !issueLabel ||
-    !workspaceRelativePath ||
+    !workspacePath ||
     !requestedBy ||
     !requestedAt
   ) {
@@ -131,7 +131,7 @@ export function parseProjectProvisioningIssueMetadata(
     slug,
     repositoryName,
     issueLabel,
-    workspaceRelativePath,
+    workspacePath,
     requestedBy,
     requestedAt,
   };

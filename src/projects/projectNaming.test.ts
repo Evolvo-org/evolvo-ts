@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  MANAGED_PROJECT_WORKSPACE_ROOT,
   buildProjectIssueLabel,
   normalizeProjectNameInput,
 } from "./projectNaming.js";
@@ -11,12 +12,18 @@ describe("projectNaming", () => {
       slug: "habit-cli",
       repositoryName: "habit-cli",
       issueLabel: "project:habit-cli",
-      workspaceRelativePath: "projects/habit-cli",
+      workspacePath: `${MANAGED_PROJECT_WORKSPACE_ROOT}/habit-cli`,
     });
   });
 
   it("builds reserved project labels", () => {
     expect(buildProjectIssueLabel("habit-cli")).toBe("project:habit-cli");
+  });
+
+  it("supports overriding the managed workspace root", () => {
+    expect(normalizeProjectNameInput("Habit CLI", { workspaceRoot: "/tmp/workspaces" }).workspacePath).toBe(
+      "/tmp/workspaces/habit-cli",
+    );
   });
 
   it("rejects whitespace-only project names", () => {
