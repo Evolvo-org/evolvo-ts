@@ -103,6 +103,23 @@ export type StartProjectCommandHandlingResult =
     message: string;
   };
 
+export type CreateProjectCommandHandlingResult =
+  | {
+    ok: true;
+    message: string;
+    project: {
+      displayName: string;
+      slug: string;
+      repositoryName: string;
+      workspacePath: string;
+      status: "provisioning";
+    };
+  }
+  | {
+    ok: false;
+    message: string;
+  };
+
 export type ProjectProvisioningExecutionResult = {
   ok: boolean;
   metadata: ProjectProvisioningIssueMetadata;
@@ -407,6 +424,80 @@ export async function createProjectProvisioningRequestIssue(options: {
     return {
       ok: false,
       message: error instanceof Error ? error.message : "Unknown project provisioning request error.",
+    };
+  }
+}
+
+export async function handleCreateProjectCommand(options: {
+  workDir: string;
+  trackerOwner: string;
+  trackerRepo: string;
+  projectName: string;
+  requestedBy: string;
+  requestedAt?: string;
+  workspaceRoot?: string;
+}): Promise<CreateProjectCommandHandlingResult> {
+  try {
+    const normalized = normalizeProjectNameInput(options.projectName, {
+      workspaceRoot: options.workspaceRoot,
+    });
+    const defaultProject = buildDefaultProjectContext(options.workDir, options.trackerOwner, options.trackerRepo);
+    const registry = await readProjectRegistry(options.workDir, defaultProject);
+    const existingProject = findProjectBySlug(registry, normalized.slug);
+    if (existingProject) {
+      return {
+        ok: false,
+        message: `Project \`${normalized.slug}\` already exists in the registry with status \`${existingProject.status}\`.`,
+      };
+    }
+
+    const now = options.requestedAt?.trim() || new Date().toISOString();
+    const record: ProjectRecord = {
+      slug: normalized.slug,
+      displayName: normalized.displayName,
+      kind: "managed",
+      issueLabel: normalized.issueLabel,
+      trackerRepo: {
+        owner: options.trackerOwner,
+        repo: normalized.repositoryName,
+        url: buildRepositoryUrl(options.trackerOwner, normalized.repositoryName),
+      },
+      executionRepo: {
+        owner: options.trackerOwner,
+        repo: normalized.repositoryName,
+        url: buildRepositoryUrl(options.trackerOwner, normalized.repositoryName),
+        defaultBranch: null,
+      },
+      cwd: normalized.workspacePath,
+      status: "provisioning",
+      sourceIssueNumber: null,
+      createdAt: now,
+      updatedAt: now,
+      provisioning: {
+        labelCreated: false,
+        repoCreated: false,
+        workspacePrepared: false,
+        lastError: null,
+      },
+      workflow: createDefaultProjectWorkflow(options.trackerOwner),
+    };
+    await upsertProjectRecord(options.workDir, defaultProject, record);
+
+    return {
+      ok: true,
+      message: `Registered project \`${record.slug}\` in the project registry. The project remains idle until \`startProject existing <registered-project>\` is used.`,
+      project: {
+        displayName: record.displayName,
+        slug: record.slug,
+        repositoryName: record.executionRepo.repo,
+        workspacePath: record.cwd,
+        status: "provisioning",
+      },
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      message: error instanceof Error ? error.message : "Unknown project creation request error.",
     };
   }
 }
