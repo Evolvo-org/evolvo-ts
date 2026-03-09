@@ -1,3 +1,4 @@
+import { dirname } from "node:path";
 import {
   activateProjectInState,
   deactivateProjectInState,
@@ -5,6 +6,7 @@ import {
 } from "../projects/activeProjectsState.js";
 import { readProjectActivityState, setProjectActivityMode } from "../projects/projectActivityState.js";
 import {
+  handleCreateProjectCommand,
   handleStartProjectCommand,
 } from "../projects/projectProvisioning.js";
 import {
@@ -162,6 +164,33 @@ export function createDiscordControlHandlers(options: {
         displayName: project.displayName,
         status: project.status,
       }));
+    },
+    onCreateProject: async (request) => {
+      const result = await handleCreateProjectCommand({
+        workDir: options.workDir,
+        trackerOwner: options.trackerOwner,
+        trackerRepo: options.trackerRepo,
+        projectName: request.displayName,
+        requestedBy: request.requestedBy,
+        requestedAt: request.requestedAt,
+        workspaceRoot: dirname(request.workspacePath),
+      });
+      if (result.ok) {
+        await setProjectActivityMode({
+          workDir: options.workDir,
+          slug: result.project.slug,
+          activityState: "stopped",
+          requestedBy: request.requestedBy,
+          updatedAt: request.requestedAt,
+        });
+        console.log(
+          `[createProject] registered new project ${result.project.displayName} (${result.project.slug}) in provisioning status; project remains idle until explicitly started.`,
+        );
+      } else {
+        console.error(`[createProject] failed for ${request.displayName}: ${result.message}`);
+      }
+
+      return result;
     },
     onStartProject: async (request) => {
       const registry = await readProjectRegistry(options.workDir, options.defaultProjectContext);

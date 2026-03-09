@@ -1205,6 +1205,113 @@ describe("operatorControl", () => {
     );
   });
 
+  it("creates and registers a project from an authorized plain-text createProject command", async () => {
+    const workDir = await createTempWorkDir();
+    tempDirs.push(workDir);
+    vi.stubEnv("DISCORD_BOT_TOKEN", "bot-token");
+    vi.stubEnv("DISCORD_CONTROL_GUILD_ID", "guild-1");
+    vi.stubEnv("DISCORD_CONTROL_CHANNEL_ID", "channel-1");
+    vi.stubEnv("DISCORD_OPERATOR_USER_ID", "operator-1");
+
+    const onCreateProject = vi.fn().mockResolvedValue({
+      ok: true,
+      message:
+        "Registered project `habit-cli` in the project registry. The project remains idle until `startProject existing <registered-project>` is used.",
+      project: {
+        displayName: "Habit CLI",
+        slug: "habit-cli",
+        repositoryName: "habit-cli",
+        workspacePath: "/home/paddy/habit-cli",
+        status: "provisioning",
+      },
+    });
+    const fetchSpy = vi.fn()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify([{ id: "7110", content: "boot", author: { id: "someone" } }]), { status: 200 }),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify([{ id: "7111", content: "createProject Habit CLI", author: { id: "operator-1" } }]),
+          { status: 200 },
+        ),
+      )
+      .mockResolvedValueOnce(new Response(JSON.stringify({ id: "ack-create-1" }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchSpy);
+
+    const request = await pollDiscordGracefulShutdownCommand(workDir, { onCreateProject });
+
+    expect(request).toBeNull();
+    expect(onCreateProject).toHaveBeenCalledWith({
+      messageId: "7111",
+      requestedAt: expect.any(String),
+      requestedBy: "discord:operator-1",
+      displayName: "Habit CLI",
+      slug: "habit-cli",
+      repositoryName: "habit-cli",
+      issueLabel: "project:habit-cli",
+      workspacePath: "/home/paddy/habit-cli",
+    });
+    expect(fetchSpy).toHaveBeenNthCalledWith(
+      3,
+      "https://discord.com/api/v10/channels/channel-1/messages",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({
+          content: [
+            "<@operator-1> Registered new project `Habit CLI`.",
+            "Registered project `habit-cli` in the project registry. The project remains idle until `startProject existing <registered-project>` is used.",
+            "Registry status: `provisioning`",
+            "Registered repository: `habit-cli`",
+            "Canonical workspace: `/home/paddy/habit-cli`",
+            "Project execution remains idle until `/startproject existing` is run.",
+          ].join("\n"),
+        }),
+      }),
+    );
+  });
+
+  it("acknowledges missing project names for authorized plain-text createProject commands", async () => {
+    const workDir = await createTempWorkDir();
+    tempDirs.push(workDir);
+    vi.stubEnv("DISCORD_BOT_TOKEN", "bot-token");
+    vi.stubEnv("DISCORD_CONTROL_GUILD_ID", "guild-1");
+    vi.stubEnv("DISCORD_CONTROL_CHANNEL_ID", "channel-1");
+    vi.stubEnv("DISCORD_OPERATOR_USER_ID", "operator-1");
+
+    const onCreateProject = vi.fn();
+    const fetchSpy = vi.fn()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify([{ id: "7114", content: "boot", author: { id: "someone" } }]), { status: 200 }),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify([{ id: "7115", content: "createProject", author: { id: "operator-1" } }]),
+          { status: 200 },
+        ),
+      )
+      .mockResolvedValueOnce(new Response(JSON.stringify({ id: "ack-create-2" }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchSpy);
+
+    await pollDiscordGracefulShutdownCommand(workDir, { onCreateProject });
+
+    expect(onCreateProject).not.toHaveBeenCalled();
+    expect(fetchSpy).toHaveBeenNthCalledWith(
+      3,
+      "https://discord.com/api/v10/channels/channel-1/messages",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({
+          content: [
+            "<@operator-1> Could not create project `<missing project name>`.",
+            "`createProject` requires a project name.",
+            "Usage: `/createproject name:<new-project-name>`",
+            "Plain-text fallback: `createProject <new-project-name>`",
+          ].join("\n"),
+        }),
+      }),
+    );
+  });
+
   it("acknowledges an authorized startProject request by resuming an existing project", async () => {
     const workDir = await createTempWorkDir();
     tempDirs.push(workDir);
@@ -1981,6 +2088,69 @@ describe("operatorControl", () => {
         "<@operator-1> Could not queue project start request.",
         "Project `missing-project` is not in the registered project set. Select from autocomplete suggestions.",
         "Usage: `/startproject existing project:<registered-project>`",
+      ].join("\n"),
+    });
+  });
+
+  it("handles an authorized /createproject slash command without starting project work", async () => {
+    const workDir = await createTempWorkDir();
+    tempDirs.push(workDir);
+    vi.stubEnv("DISCORD_BOT_TOKEN", "bot-token");
+    vi.stubEnv("DISCORD_CONTROL_GUILD_ID", "guild-1");
+    vi.stubEnv("DISCORD_CONTROL_CHANNEL_ID", "channel-1");
+    vi.stubEnv("DISCORD_OPERATOR_USER_ID", "operator-1");
+
+    const onCreateProject = vi.fn().mockResolvedValue({
+      ok: true,
+      message:
+        "Registered project `habit-cli` in the project registry. The project remains idle until `startProject existing <registered-project>` is used.",
+      project: {
+        displayName: "Habit CLI",
+        slug: "habit-cli",
+        repositoryName: "habit-cli",
+        workspacePath: "/home/paddy/habit-cli",
+        status: "provisioning",
+      },
+    });
+    const interaction = createSlashInteraction({
+      id: "slash-create-1",
+      commandName: "createproject",
+      values: {
+        name: "Habit CLI",
+      },
+    });
+
+    const result = await handleDiscordSlashCommandInteraction(interaction, workDir, { onCreateProject });
+
+    expect(onCreateProject).toHaveBeenCalledWith({
+      messageId: "slash-create-1",
+      requestedAt: expect.any(String),
+      requestedBy: "discord:operator-1",
+      displayName: "Habit CLI",
+      slug: "habit-cli",
+      repositoryName: "habit-cli",
+      issueLabel: "project:habit-cli",
+      workspacePath: "/home/paddy/habit-cli",
+    });
+    expect(interaction.editReply).toHaveBeenCalledWith({
+      content: [
+        "<@operator-1> Registered new project `Habit CLI`.",
+        "Registered project `habit-cli` in the project registry. The project remains idle until `startProject existing <registered-project>` is used.",
+        "Registry status: `provisioning`",
+        "Registered repository: `habit-cli`",
+        "Canonical workspace: `/home/paddy/habit-cli`",
+        "Project execution remains idle until `/startproject existing` is run.",
+      ].join("\n"),
+    });
+    expect(result).toEqual({
+      gracefulShutdownRequest: null,
+      replyContent: [
+        "<@operator-1> Registered new project `Habit CLI`.",
+        "Registered project `habit-cli` in the project registry. The project remains idle until `startProject existing <registered-project>` is used.",
+        "Registry status: `provisioning`",
+        "Registered repository: `habit-cli`",
+        "Canonical workspace: `/home/paddy/habit-cli`",
+        "Project execution remains idle until `/startproject existing` is run.",
       ].join("\n"),
     });
   });

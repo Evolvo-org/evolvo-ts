@@ -9,10 +9,11 @@ import {
   buildProjectProvisioningOutcomeComment,
   createProjectProvisioningRequestIssue,
   executeProjectProvisioningIssue,
+  handleCreateProjectCommand,
   handleStartProjectCommand,
   isProjectProvisioningRequestIssue,
 } from "./projectProvisioning.js";
-import { getProjectRegistryPath, upsertProjectRecord } from "./projectRegistry.js";
+import { getProjectRegistryPath, readProjectRegistry, upsertProjectRecord } from "./projectRegistry.js";
 import { getActiveProjectStatePath } from "./activeProjectState.js";
 import { getActiveProjectsStatePath } from "./activeProjectsState.js";
 import { createDefaultProjectWorkflow } from "./projectWorkflow.js";
@@ -93,6 +94,126 @@ describe("projectProvisioning", () => {
       "Start project Habit CLI",
       expect.stringContaining("project:habit-cli"),
     );
+  });
+
+  it("creates and registers a new project without starting it", async () => {
+    const workDir = await createTempWorkDir();
+    tempDirs.push(workDir);
+
+    const result = await handleCreateProjectCommand({
+      workDir,
+      trackerOwner: "evolvo-auto",
+      trackerRepo: "evolvo-ts",
+      projectName: " Habit   CLI ",
+      requestedBy: "discord:operator-1",
+      requestedAt: "2026-03-07T12:00:00.000Z",
+      workspaceRoot: workDir,
+    });
+
+    expect(result).toEqual({
+      ok: true,
+      message:
+        "Registered project `habit-cli` in the project registry. The project remains idle until `startProject existing <registered-project>` is used.",
+      project: {
+        displayName: "Habit CLI",
+        slug: "habit-cli",
+        repositoryName: "habit-cli",
+        workspacePath: createManagedWorkspacePath(workDir),
+        status: "provisioning",
+      },
+    });
+
+    const registry = await readProjectRegistry(workDir, {
+      owner: "evolvo-auto",
+      repo: "evolvo-ts",
+      workDir,
+    });
+    const createdProject = registry.projects.find((project) => project.slug === "habit-cli");
+    expect(createdProject).toEqual({
+      slug: "habit-cli",
+      displayName: "Habit CLI",
+      kind: "managed",
+      issueLabel: "project:habit-cli",
+      trackerRepo: {
+        owner: "evolvo-auto",
+        repo: "habit-cli",
+        url: "https://github.com/evolvo-auto/habit-cli",
+      },
+      executionRepo: {
+        owner: "evolvo-auto",
+        repo: "habit-cli",
+        url: "https://github.com/evolvo-auto/habit-cli",
+        defaultBranch: null,
+      },
+      cwd: createManagedWorkspacePath(workDir),
+      status: "provisioning",
+      sourceIssueNumber: null,
+      createdAt: "2026-03-07T12:00:00.000Z",
+      updatedAt: "2026-03-07T12:00:00.000Z",
+      provisioning: {
+        labelCreated: false,
+        repoCreated: false,
+        workspacePrepared: false,
+        lastError: null,
+      },
+      workflow: createDefaultProjectWorkflow("evolvo-auto"),
+    });
+  });
+
+  it("rejects create project requests when the slug already exists in the registry", async () => {
+    const workDir = await createTempWorkDir();
+    tempDirs.push(workDir);
+    await upsertProjectRecord(
+      workDir,
+      {
+        owner: "evolvo-auto",
+        repo: "evolvo-ts",
+        workDir,
+      },
+      {
+        slug: "habit-cli",
+        displayName: "Habit CLI",
+        kind: "managed",
+        issueLabel: "project:habit-cli",
+        trackerRepo: {
+          owner: "evolvo-auto",
+          repo: "habit-cli",
+          url: "https://github.com/evolvo-auto/habit-cli",
+        },
+        executionRepo: {
+          owner: "evolvo-auto",
+          repo: "habit-cli",
+          url: "https://github.com/evolvo-auto/habit-cli",
+          defaultBranch: "main",
+        },
+        cwd: createManagedWorkspacePath(workDir),
+        status: "active",
+        sourceIssueNumber: 318,
+        createdAt: "2026-03-07T12:00:00.000Z",
+        updatedAt: "2026-03-07T12:00:00.000Z",
+        provisioning: {
+          labelCreated: true,
+          repoCreated: true,
+          workspacePrepared: true,
+          lastError: null,
+        },
+        workflow: createDefaultProjectWorkflow("evolvo-auto"),
+      },
+    );
+
+    const result = await handleCreateProjectCommand({
+      workDir,
+      trackerOwner: "evolvo-auto",
+      trackerRepo: "evolvo-ts",
+      projectName: "Habit CLI",
+      requestedBy: "discord:operator-1",
+      workspaceRoot: workDir,
+    });
+
+    expect(result).toEqual({
+      ok: false,
+      message: "Project `habit-cli` already exists in the registry with status `active`.",
+    });
   });
 
   it("rejects duplicate open provisioning requests for the same slug", async () => {

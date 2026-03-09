@@ -49,6 +49,17 @@ export type StartProjectCommandRequest = {
   workspacePath: string;
 };
 
+export type CreateProjectCommandRequest = {
+  messageId: string;
+  requestedAt: string;
+  requestedBy: string;
+  displayName: string;
+  slug: string;
+  repositoryName: string;
+  issueLabel: string;
+  workspacePath: string;
+};
+
 export type StopProjectCommandRequest = {
   messageId: string;
   requestedAt: string;
@@ -111,6 +122,23 @@ export type StartProjectCommandResult =
     message: string;
   };
 
+export type CreateProjectCommandResult =
+  | {
+    ok: true;
+    message: string;
+    project: {
+      displayName: string;
+      slug: string;
+      repositoryName: string;
+      workspacePath: string;
+      status: "provisioning";
+    };
+  }
+  | {
+    ok: false;
+    message: string;
+  };
+
 export type StopProjectCommandResult =
   | {
     ok: true;
@@ -142,6 +170,7 @@ export type StatusCommandResult =
   };
 
 export type DiscordControlHandlers = {
+  onCreateProject?: (request: CreateProjectCommandRequest) => Promise<CreateProjectCommandResult>;
   onStartProject?: (request: StartProjectCommandRequest) => Promise<StartProjectCommandResult>;
   onStopProject?: (request: StopProjectCommandRequest) => Promise<StopProjectCommandResult>;
   onStatus?: (request: StatusCommandRequest) => Promise<StatusCommandResult>;
@@ -168,6 +197,7 @@ type DiscordOperatorStep =
   | "send-quit-ack"
   | "send-stop-project-ack"
   | "send-status-ack"
+  | "send-create-project-ack"
   | "send-project-return-ack"
   | "send-start-project-ack"
   | "send-cycle-decision-ack"
@@ -207,7 +237,7 @@ type DiscordControlMessage = {
   author?: { id?: string };
 };
 
-type DiscordSlashCommandName = "quit" | "startproject" | "stopproject" | "status";
+type DiscordSlashCommandName = "quit" | "createproject" | "startproject" | "stopproject" | "status";
 
 type DiscordSlashCommandResult = {
   gracefulShutdownRequest: GracefulShutdownRequest | null;
@@ -220,6 +250,7 @@ type DiscordSlashCommandStopResult = {
 
 const DISCORD_SLASH_COMMAND_NAMES = {
   quit: "quit",
+  createProject: "createproject",
   startProject: "startproject",
   stopProject: "stopproject",
   status: "status",
@@ -321,6 +352,36 @@ type ParsedStartProjectRequest =
     projectName: string | null;
   };
 
+type ParsedCreateProjectRequest =
+  | {
+    ok: true;
+    projectName: string;
+  }
+  | {
+    ok: false;
+    message: string;
+  };
+
+function parseCreateProjectRequest(content: string): ParsedCreateProjectRequest | null {
+  const match = content.match(/^createproject(?:\s+(.+))?$/i);
+  if (!match) {
+    return null;
+  }
+
+  const projectName = match[1]?.trim() ?? "";
+  if (!projectName) {
+    return {
+      ok: false,
+      message: "`createProject` requires a project name.",
+    };
+  }
+
+  return {
+    ok: true,
+    projectName,
+  };
+}
+
 function parseStartProjectRequest(content: string): ParsedStartProjectRequest | null {
   const match = content.match(/^startproject(?:\s+(.+))?$/i);
   if (!match) {
@@ -356,7 +417,7 @@ function parseStartProjectRequest(content: string): ParsedStartProjectRequest | 
 
   return {
     ok: false,
-    message: "`startProject` supports only `existing` and cannot create new projects.",
+    message: "`startProject` supports only `existing`. Use `createProject <new-project-name>` to register a new project.",
     projectName: suffix,
   };
 }
@@ -752,8 +813,8 @@ function buildStartupBootMessageContent(): string {
   return [
     "🤖 Evolvo runtime booted.",
     "Operator control is online in plain-text mode, and the live bot session will register slash commands when it connects.",
-    "Slash commands: `/status`, `/quit`, `/startproject existing project:<registered-project>`, `/stopproject project:<registered-project> mode:now|whenComplete`.",
-    "Plain-text fallback: `status`, `quit after current task`, `quit after tasks`, `startProject existing <registered-project>`, `stopProject <registered-project> now|whenComplete`.",
+    "Slash commands: `/status`, `/quit`, `/createproject name:<new-project-name>`, `/startproject existing project:<registered-project>`, `/stopproject project:<registered-project> mode:now|whenComplete`.",
+    "Plain-text fallback: `status`, `quit after current task`, `quit after tasks`, `createProject <new-project-name>`, `startProject existing <registered-project>`, `stopProject <registered-project> now|whenComplete`.",
     "When Evolvo posts a cycle-limit prompt, reply with `continue` or `quit`.",
     `Started at: ${startedAt}`,
   ].join("\n");
@@ -871,6 +932,41 @@ async function sendGracefulShutdownAcknowledgement(
     method: "POST",
     body: JSON.stringify({
       content: buildGracefulShutdownAcknowledgementContent(config.operatorUserId, request, options),
+    }),
+  });
+}
+
+function buildCreateProjectAcknowledgementContent(
+  operatorUserId: string,
+  request: CreateProjectCommandRequest,
+  result: CreateProjectCommandResult,
+): string {
+  return !result.ok
+    ? [
+      `<@${operatorUserId}> Could not create project \`${request.displayName}\`.`,
+      result.message,
+      "Usage: `/createproject name:<new-project-name>`",
+      "Plain-text fallback: `createProject <new-project-name>`",
+    ].join("\n")
+    : [
+      `<@${operatorUserId}> Registered new project \`${result.project.displayName}\`.`,
+      result.message,
+      `Registry status: \`${result.project.status}\``,
+      `Registered repository: \`${result.project.repositoryName}\``,
+      `Canonical workspace: \`${result.project.workspacePath}\``,
+      "Project execution remains idle until `/startproject existing` is run.",
+    ].join("\n");
+}
+
+async function sendCreateProjectAcknowledgement(
+  config: DiscordControlConfig,
+  request: CreateProjectCommandRequest,
+  result: CreateProjectCommandResult,
+): Promise<void> {
+  await fetchDiscordJson<{ id: string }>(config, `/channels/${config.controlChannelId}/messages`, {
+    method: "POST",
+    body: JSON.stringify({
+      content: buildCreateProjectAcknowledgementContent(config.operatorUserId, request, result),
     }),
   });
 }
@@ -1213,6 +1309,18 @@ function buildDiscordSlashCommandDefinitions(): RESTPostAPIChatInputApplicationC
       ],
     },
     {
+      name: DISCORD_SLASH_COMMAND_NAMES.createProject,
+      description: "Create and register a project without starting it",
+      options: [
+        {
+          type: ApplicationCommandOptionType.String,
+          name: "name",
+          description: "New project name",
+          required: true,
+        },
+      ],
+    },
+    {
       name: DISCORD_SLASH_COMMAND_NAMES.startProject,
       description: "Start or resume a registered project",
       options: [
@@ -1388,6 +1496,82 @@ async function processStartProjectControlCommand(
   };
 }
 
+async function processCreateProjectControlCommand(
+  workDir: string,
+  messageId: string,
+  requestedProjectName: string,
+  requestedBy: string,
+  handlers: DiscordControlHandlers,
+): Promise<{ request: CreateProjectCommandRequest; result: CreateProjectCommandResult; duplicate: boolean }> {
+  const recordedReceipt = await recordDiscordControlCommandReceipt(workDir, {
+    command: "create-project",
+    messageId,
+  });
+
+  if (!recordedReceipt) {
+    return {
+      duplicate: true,
+      request: {
+        messageId,
+        requestedAt: new Date().toISOString(),
+        requestedBy,
+        displayName: requestedProjectName.trim() || "<missing project name>",
+        slug: "",
+        repositoryName: "",
+        issueLabel: "",
+        workspacePath: "",
+      },
+      result: {
+        ok: false,
+        message: buildDuplicateInteractionMessage(),
+      },
+    };
+  }
+
+  let createProjectRequest: CreateProjectCommandRequest;
+  let commandResult: CreateProjectCommandResult;
+  try {
+    const normalized = normalizeProjectNameInput(requestedProjectName);
+    createProjectRequest = {
+      messageId,
+      requestedAt: new Date().toISOString(),
+      requestedBy,
+      displayName: normalized.displayName,
+      slug: normalized.slug,
+      repositoryName: normalized.repositoryName,
+      issueLabel: normalized.issueLabel,
+      workspacePath: normalized.workspacePath,
+    };
+
+    if (!handlers.onCreateProject) {
+      throw new Error("Project creation commands are not available in this runtime.");
+    }
+
+    commandResult = await handlers.onCreateProject(createProjectRequest);
+  } catch (error) {
+    createProjectRequest = {
+      messageId,
+      requestedAt: new Date().toISOString(),
+      requestedBy,
+      displayName: requestedProjectName.trim() || "<missing project name>",
+      slug: "",
+      repositoryName: "",
+      issueLabel: "",
+      workspacePath: "",
+    };
+    commandResult = {
+      ok: false,
+      message: error instanceof Error ? error.message : "Unknown project creation request error.",
+    };
+  }
+
+  return {
+    duplicate: false,
+    request: createProjectRequest,
+    result: commandResult,
+  };
+}
+
 async function processStopProjectControlCommand(
   workDir: string,
   messageId: string,
@@ -1465,6 +1649,7 @@ function getSlashCommandName(interaction: ChatInputCommandInteraction): DiscordS
   if (
     interaction.commandName === DISCORD_SLASH_COMMAND_NAMES.status
     || interaction.commandName === DISCORD_SLASH_COMMAND_NAMES.quit
+    || interaction.commandName === DISCORD_SLASH_COMMAND_NAMES.createProject
     || interaction.commandName === DISCORD_SLASH_COMMAND_NAMES.startProject
     || interaction.commandName === DISCORD_SLASH_COMMAND_NAMES.stopProject
   ) {
@@ -1597,6 +1782,38 @@ export async function handleDiscordSlashCommandInteraction(
     await interaction.editReply({ content: replyContent });
     return {
       gracefulShutdownRequest: recordedRequest.request,
+      replyContent,
+    };
+  }
+
+  if (commandName === DISCORD_SLASH_COMMAND_NAMES.createProject) {
+    const requestedName = interaction.options.getString("name", true).trim();
+    if (!requestedName) {
+      const replyContent = [
+        `<@${config.operatorUserId}> Could not create project \`<missing project name>\`.`,
+        "`createProject` requires a project name.",
+        "Usage: `/createproject name:<new-project-name>`",
+      ].join("\n");
+      await interaction.editReply({ content: replyContent });
+      return {
+        gracefulShutdownRequest: null,
+        replyContent,
+      };
+    }
+
+    const processed = await processCreateProjectControlCommand(
+      workDir,
+      interaction.id,
+      requestedName,
+      `discord:${interaction.user.id}`,
+      handlers,
+    );
+    const replyContent = processed.duplicate
+      ? buildDuplicateInteractionMessage()
+      : buildCreateProjectAcknowledgementContent(config.operatorUserId, processed.request, processed.result);
+    await interaction.editReply({ content: replyContent });
+    return {
+      gracefulShutdownRequest: null,
       replyContent,
     };
   }
@@ -1943,6 +2160,53 @@ export async function pollDiscordGracefulShutdownCommand(
         continue;
       }
 
+      const parsedCreateRequest = parseCreateProjectRequest(message.content);
+      if (parsedCreateRequest !== null && handlers.onCreateProject) {
+        let processed:
+          | { request: CreateProjectCommandRequest; result: CreateProjectCommandResult; duplicate: boolean }
+          | null = null;
+
+        if (parsedCreateRequest.ok) {
+          processed = await processCreateProjectControlCommand(
+            workDir,
+            message.id,
+            parsedCreateRequest.projectName,
+            `discord:${config.operatorUserId}`,
+            handlers,
+          );
+        } else {
+          processed = {
+            duplicate: false,
+            request: {
+              messageId: message.id,
+              requestedAt: new Date().toISOString(),
+              requestedBy: `discord:${config.operatorUserId}`,
+              displayName: "<missing project name>",
+              slug: "",
+              repositoryName: "",
+              issueLabel: "",
+              workspacePath: "",
+            },
+            result: {
+              ok: false,
+              message: parsedCreateRequest.message,
+            },
+          };
+        }
+
+        if (processed && !processed.duplicate) {
+          try {
+            await sendCreateProjectAcknowledgement(config, processed.request, processed.result);
+          } catch (error) {
+            const sendMessage = buildStepFailureMessage("send-create-project-ack", error);
+            console.error(`Discord project creation acknowledgement failed: ${sendMessage}`);
+            logDiscordMissingAccessHint(sendMessage);
+          }
+        }
+
+        continue;
+      }
+
       const stopProjectCommandSuffix = parseStopProjectCommand(message.content);
       if (stopProjectCommandSuffix !== null && handlers.onStopProject) {
         const parsedStopRequest = parseStopProjectRequestSuffix(stopProjectCommandSuffix);
@@ -2158,7 +2422,7 @@ async function startDiscordSlashCommandListener(
     void registerDiscordSlashCommands(readyClient, config)
       .then(() => {
         console.log(
-          `Discord slash commands registered in guild ${config.guildId}: /${DISCORD_SLASH_COMMAND_NAMES.status}, /${DISCORD_SLASH_COMMAND_NAMES.quit}, /${DISCORD_SLASH_COMMAND_NAMES.startProject}, /${DISCORD_SLASH_COMMAND_NAMES.stopProject}.`,
+          `Discord slash commands registered in guild ${config.guildId}: /${DISCORD_SLASH_COMMAND_NAMES.status}, /${DISCORD_SLASH_COMMAND_NAMES.quit}, /${DISCORD_SLASH_COMMAND_NAMES.createProject}, /${DISCORD_SLASH_COMMAND_NAMES.startProject}, /${DISCORD_SLASH_COMMAND_NAMES.stopProject}.`,
         );
       })
       .catch((error: unknown) => {

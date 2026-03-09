@@ -9,6 +9,7 @@ import { readProjectActivityState, setProjectActivityMode } from "../projects/pr
 import {
   type DefaultProjectContext,
   type ProjectRecord,
+  readProjectRegistry,
   upsertProjectRecord,
 } from "../projects/projectRegistry.js";
 import { createDefaultProjectWorkflow } from "../projects/projectWorkflow.js";
@@ -110,6 +111,108 @@ describe("runtimeOperatorHandlers", () => {
     });
     expect(issueManager.listOpenIssues).not.toHaveBeenCalled();
     expect(issueManager.createIssue).not.toHaveBeenCalled();
+  });
+
+  it("creates and registers a project without marking it active", async () => {
+    const workDir = await createTempWorkDir();
+    tempDirs.push(workDir);
+    const handlers = createDiscordControlHandlers({
+      workDir,
+      trackerOwner: "evolvo-auto",
+      trackerRepo: "evolvo-ts",
+      defaultProjectContext: createDefaultProjectContext(workDir),
+      issueManager: {
+        listOpenIssues: vi.fn().mockResolvedValue([]),
+        createIssue: vi.fn(),
+      } as unknown as TaskIssueManager,
+      boardsClient: {} as unknown as GitHubProjectsV2Client,
+      runtimeState: {
+        runtimeStatusState: "active",
+        runtimeStatusActivitySummary: "idle",
+        runtimeStatusCycle: null,
+        runtimeStatusCycleLimit: null,
+        runtimeStatusIssue: null,
+      },
+    });
+
+    const result = await handlers.onCreateProject?.({
+      messageId: "create-1",
+      requestedAt: "2026-03-08T10:00:00.000Z",
+      requestedBy: "discord:operator-1",
+      displayName: "Habit CLI",
+      slug: "habit-cli",
+      repositoryName: "habit-cli",
+      issueLabel: "project:habit-cli",
+      workspacePath: resolve(workDir, "habit-cli"),
+    });
+
+    expect(result).toEqual({
+      ok: true,
+      message:
+        "Registered project `habit-cli` in the project registry. The project remains idle until `startProject existing <registered-project>` is used.",
+      project: {
+        displayName: "Habit CLI",
+        slug: "habit-cli",
+        repositoryName: "habit-cli",
+        workspacePath: resolve(workDir, "habit-cli"),
+        status: "provisioning",
+      },
+    });
+
+    const registry = await readProjectRegistry(workDir, createDefaultProjectContext(workDir));
+    expect(registry.projects.some((project) => project.slug === "habit-cli")).toBe(true);
+
+    const activeProjects = await readActiveProjectsState(workDir);
+    expect(activeProjects.projects).toEqual([]);
+
+    const activityState = await readProjectActivityState(workDir);
+    expect(activityState.projects.find((entry) => entry.slug === "habit-cli")).toEqual(
+      expect.objectContaining({
+        slug: "habit-cli",
+        activityState: "stopped",
+      }),
+    );
+  });
+
+  it("rejects create requests for already-registered projects", async () => {
+    const workDir = await createTempWorkDir();
+    tempDirs.push(workDir);
+    const defaultProjectContext = createDefaultProjectContext(workDir);
+    await upsertProjectRecord(workDir, defaultProjectContext, createManagedProjectRecord(workDir, "habit-cli", "Habit CLI"));
+    const handlers = createDiscordControlHandlers({
+      workDir,
+      trackerOwner: "evolvo-auto",
+      trackerRepo: "evolvo-ts",
+      defaultProjectContext,
+      issueManager: {
+        listOpenIssues: vi.fn().mockResolvedValue([]),
+        createIssue: vi.fn(),
+      } as unknown as TaskIssueManager,
+      boardsClient: {} as unknown as GitHubProjectsV2Client,
+      runtimeState: {
+        runtimeStatusState: "active",
+        runtimeStatusActivitySummary: "idle",
+        runtimeStatusCycle: null,
+        runtimeStatusCycleLimit: null,
+        runtimeStatusIssue: null,
+      },
+    });
+
+    const result = await handlers.onCreateProject?.({
+      messageId: "create-2",
+      requestedAt: "2026-03-08T10:05:00.000Z",
+      requestedBy: "discord:operator-1",
+      displayName: "Habit CLI",
+      slug: "habit-cli",
+      repositoryName: "habit-cli",
+      issueLabel: "project:habit-cli",
+      workspacePath: resolve(workDir, "habit-cli"),
+    });
+
+    expect(result).toEqual({
+      ok: false,
+      message: "Project `habit-cli` already exists in the registry with status `active`.",
+    });
   });
 
   it("stops only the targeted project in now mode", async () => {
